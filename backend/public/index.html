@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>YT → MP3 API Tester</title>
+  <style>
+    :root {
+      --primary: #ff4e4e;
+      --bg: #0f0f0f;
+      --card-bg: #1a1a1a;
+      --text: #eee;
+      --text-dim: #888;
+      --border: #333;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: 'Inter', system-ui, -apple-system, sans-serif; 
+      background: var(--bg); 
+      color: var(--text); 
+      min-height: 100vh; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      padding: 20px;
+    }
+    .container { 
+      width: 100%; 
+      max-width: 600px; 
+      background: var(--card-bg);
+      padding: 2.5rem; 
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    }
+    h1 { font-size: 1.75rem; margin-bottom: 0.5rem; color: var(--primary); font-weight: 800; letter-spacing: -0.02em; }
+    .subtitle { color: var(--text-dim); font-size: 0.95rem; margin-bottom: 2rem; }
+    label { display: block; font-size: 0.75rem; color: #aaa; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+    input, select { 
+      width: 100%; 
+      padding: 1rem 1.25rem; 
+      background: #111; 
+      border: 1px solid var(--border); 
+      border-radius: 12px; 
+      color: #fff; 
+      font-size: 1rem; 
+      outline: none; 
+      transition: all 0.2s; 
+    }
+    input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(255, 78, 78, 0.2); }
+    .row { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; }
+    .row input { flex: 1; }
+    button { 
+      padding: 0.75rem 1.5rem; 
+      border: none; 
+      border-radius: 12px; 
+      font-size: 0.95rem; 
+      cursor: pointer; 
+      font-weight: 700; 
+      transition: all 0.2s; 
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    button:active { transform: scale(0.98); }
+    .btn-info { background: #333; color: #fff; border: 1px solid #444; }
+    .btn-info:hover { background: #444; }
+    .btn-download { background: var(--primary); color: #fff; width: 100%; margin-top: 1rem; }
+    .btn-download:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(255, 78, 78, 0.3); }
+    .btn-download:disabled { background: #444; cursor: not-allowed; box-shadow: none; opacity: 0.6; }
+    
+    .card { 
+      background: #111; 
+      border: 1px solid #222; 
+      border-radius: 20px; 
+      padding: 1.5rem; 
+      margin-top: 1.5rem; 
+      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .video-meta { display: flex; gap: 1.25rem; align-items: center; }
+    .video-meta img { width: 140px; aspect-ratio: 16/9; object-fit: cover; border-radius: 12px; flex-shrink: 0; box-shadow: 0 8px 20px rgba(0,0,0,0.4); }
+    .video-meta .meta-text { flex: 1; min-width: 0; }
+    .video-meta .meta-text h3 { font-size: 1.1rem; margin-bottom: 0.4rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .video-meta .meta-text p { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 2px; }
+    
+    .quality-row { margin-top: 1.5rem; pt: 1rem; border-top: 1px solid #222; }
+    .status { font-size: 0.85rem; margin-top: 1.5rem; padding: 1rem; border-radius: 12px; display: none; font-weight: 500; text-align: center; }
+    .status.error { background: rgba(255, 78, 78, 0.1); color: #ff7070; display: block; border: 1px solid rgba(255, 78, 78, 0.2); }
+    .status.success { background: rgba(34, 197, 94, 0.1); color: #4ade80; display: block; border: 1px solid rgba(34, 197, 94, 0.2); }
+    .status.loading { background: rgba(59, 130, 246, 0.1); color: #60a5fa; display: block; border: 1px solid rgba(59, 130, 246, 0.2); }
+    
+    .json-viewer { margin-top: 2rem; }
+    .json-viewer summary { cursor: pointer; color: var(--text-dim); font-size: 0.8rem; margin-bottom: 0.5rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    pre { background: #000; border: 1px solid #222; border-radius: 12px; padding: 1.25rem; font-size: 0.8rem; color: #00ff41; overflow-x: auto; white-space: pre-wrap; font-family: 'Fira Code', 'Courier New', monospace; }
+    .hidden { display: none !important; }
+    
+    .loader {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🎵 YT → MP3 Tester</h1>
+  <p class="subtitle">Premium YouTube to MP3 conversion API</p>
+
+  <label for="urlInput">YouTube Video URL</label>
+  <div class="row">
+    <input id="urlInput" type="text" placeholder="https://www.youtube.com/watch?v=..." />
+    <button class="btn-info" onclick="getInfo()">
+      <span id="infoBtnText">Get Info</span>
+    </button>
+  </div>
+
+  <div id="videoCard" class="card hidden">
+    <div class="video-meta">
+      <img id="thumb" src="" alt="thumbnail" />
+      <div class="meta-text">
+        <h3 id="videoTitle">—</h3>
+        <p id="videoAuthor">—</p>
+        <p id="videoDuration">—</p>
+      </div>
+    </div>
+    <div class="quality-row">
+      <label for="quality">Audio Quality</label>
+      <select id="quality">
+        <option value="128">128 kbps (Faster)</option>
+        <option value="192" selected>192 kbps (Standard)</option>
+        <option value="320">320 kbps (High Definition)</option>
+      </select>
+      <button class="btn-download" id="dlBtn" onclick="downloadMp3()">
+        <span id="dlBtnText">⬇ Download MP3</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <div class="json-viewer">
+    <details>
+      <summary>▶ Raw API Debugger</summary>
+      <pre id="jsonOutput">// Response logs will appear here</pre>
+    </details>
+  </div>
+</div>
+
+<script>
+  const API = window.location.origin;
+
+  function setStatus(msg, type) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = `status ${type}`;
+  }
+
+  function fmtDuration(sec) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  async function getInfo() {
+    const url = document.getElementById('urlInput').value.trim();
+    const btnText = document.getElementById('infoBtnText');
+    if (!url) return setStatus('Please enter a YouTube URL', 'error');
+
+    setStatus('Analyzing video link...', 'loading');
+    btnText.innerHTML = '<div class="loader"></div>';
+    document.getElementById('videoCard').classList.add('hidden');
+
+    try {
+      const res = await fetch(`${API}/info?url=${encodeURIComponent(url)}`);
+      const data = await res.json();
+      document.getElementById('jsonOutput').textContent = JSON.stringify(data, null, 2);
+
+      if (!res.ok) return setStatus(data.error || 'Error fetching info', 'error');
+
+      document.getElementById('thumb').src = data.thumbnail;
+      document.getElementById('videoTitle').textContent = data.title;
+      document.getElementById('videoAuthor').textContent = '👤 ' + data.author;
+      document.getElementById('videoDuration').textContent = '⏱ ' + fmtDuration(data.duration);
+      document.getElementById('videoCard').classList.remove('hidden');
+      setStatus('Success! Video identified.', 'success');
+    } catch (e) {
+      setStatus('Network error: ' + e.message, 'error');
+    } finally {
+      btnText.textContent = 'Get Info';
+    }
+  }
+
+  async function downloadMp3() {
+    const url = document.getElementById('urlInput').value.trim();
+    const quality = document.getElementById('quality').value;
+    const btn = document.getElementById('dlBtn');
+    const btnText = document.getElementById('dlBtnText');
+
+    if (!url) return setStatus('Enter a URL first', 'error');
+
+    btn.disabled = true;
+    btnText.innerHTML = '<div class="loader"></div> Converting...';
+    setStatus('Converting audio on server...', 'loading');
+
+    try {
+      const res = await fetch(`${API}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, quality }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        setStatus(err.error || 'Download failed', 'error');
+        return;
+      }
+
+      // Read filename from header if possible
+      const contentDisp = res.headers.get('Content-Disposition');
+      let filename = 'audio.mp3';
+      if (contentDisp && contentDisp.includes('filename=')) {
+        filename = contentDisp.split('filename=')[1].replace(/"/g, '');
+      }
+
+      // Stream the response
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+
+      setStatus('✅ Download started successfully!', 'success');
+    } catch (e) {
+      setStatus('Error: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btnText.textContent = '⬇ Download MP3';
+    }
+  }
+
+  document.getElementById('urlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') getInfo();
+  });
+</script>
+</body>
+</html>
