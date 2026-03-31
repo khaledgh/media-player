@@ -11,6 +11,40 @@ const { ytDlp, cookiesPath, hasCookies } = require('../utils/ytdlp');
 ffmpeg.setFfmpegPath(ffmpegPath);
 const TMP_DIR = path.join(__dirname, '../tmp');
 
+// Player clients to try in order of preference
+const PLAYER_CLIENTS = ['mweb', 'android', 'ios', 'tv_embedded'];
+
+async function tryGetVideoInfo(ytDlp, url, playerClients, cookiesPath, hasCookies) {
+  let lastError = null;
+  
+  for (const client of playerClients) {
+    try {
+      const args = [
+        url,
+        '--no-check-certificates',
+        '--no-playlist',
+        '--geo-bypass',
+        '--no-cookies-from-browser',
+        '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        '--extractor-args', `youtube:player-client=${client}`,
+        '--dump-json',
+      ];
+
+      if (hasCookies) {
+        args.push('--cookies', cookiesPath);
+      }
+
+      const info = await ytDlp.getVideoInfo(args);
+      return { info, client };
+    } catch (err) {
+      console.log(`[download] Player client '${client}' failed:`, err.message.split('\n')[0]);
+      lastError = err;
+    }
+  }
+  
+  throw lastError;
+}
+
 router.all('/', validateYouTubeUrl, async (req, res) => {
   const url = req.query.url || req.body?.url;
   const quality = req.query.quality || req.body?.quality || '192';
@@ -29,20 +63,8 @@ router.all('/', validateYouTubeUrl, async (req, res) => {
   };
 
   try {
-    // Get title for filename
-    const infoArgs = [
-      url,
-      '--no-check-certificates',
-      '--no-playlist',
-      '--geo-bypass',
-      '--no-cookies-from-browser',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--extractor-args', 'youtube:player-client=android',
-      '--dump-json',
-    ];
-    if (hasCookies) infoArgs.push('--cookies', cookiesPath);
-    
-    const info = await ytDlp.getVideoInfo(infoArgs);
+    // Get title for filename using fallback strategy
+    const { info, client } = await tryGetVideoInfo(ytDlp, url, PLAYER_CLIENTS, cookiesPath, hasCookies);
     const safeTitle = info.title.replace(/[^a-z0-9\s\-_]/gi, '').trim() || 'audio';
 
     // Set response headers
@@ -51,7 +73,7 @@ router.all('/', validateYouTubeUrl, async (req, res) => {
     res.setHeader('X-Video-Title', encodeURIComponent(info.title));
     res.setHeader('X-Video-Duration', info.duration);
 
-    // Stream audio from yt-dlp → FFmpeg → response
+    // Stream audio from yt-dlp → FFmpeg → response (use same client that worked for info)
     const args = [
       url,
       '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
@@ -60,8 +82,8 @@ router.all('/', validateYouTubeUrl, async (req, res) => {
       '--no-check-certificates',
       '--geo-bypass',
       '--no-cookies-from-browser',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--extractor-args', 'youtube:player-client=android',
+      '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      '--extractor-args', `youtube:player-client=${client}`,
     ];
 
     if (hasCookies) {

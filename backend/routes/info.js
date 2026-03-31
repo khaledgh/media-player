@@ -3,26 +3,45 @@ const router = express.Router();
 const { validateYouTubeUrl } = require('../middleware/validateUrl');
 const { ytDlp, cookiesPath, hasCookies } = require('../utils/ytdlp');
 
+// Player clients to try in order of preference
+const PLAYER_CLIENTS = ['mweb', 'android', 'ios', 'tv_embedded'];
+
+async function tryGetVideoInfo(ytDlp, url, playerClients, cookiesPath, hasCookies) {
+  let lastError = null;
+  
+  for (const client of playerClients) {
+    try {
+      const args = [
+        url,
+        '--no-check-certificates',
+        '--no-playlist',
+        '--geo-bypass',
+        '--no-cookies-from-browser',
+        '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        '--extractor-args', `youtube:player-client=${client}`,
+        '--dump-json',
+      ];
+
+      if (hasCookies) {
+        args.push('--cookies', cookiesPath);
+      }
+
+      const info = await ytDlp.getVideoInfo(args);
+      return info;
+    } catch (err) {
+      console.log(`[info] Player client '${client}' failed:`, err.message.split('\n')[0]);
+      lastError = err;
+    }
+  }
+  
+  throw lastError;
+}
+
 router.get('/', validateYouTubeUrl, async (req, res) => {
   const { url } = req.query;
 
   try {
-    const args = [
-      url,
-      '--no-check-certificates',
-      '--no-playlist',
-      '--geo-bypass',
-      '--no-cookies-from-browser',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--extractor-args', 'youtube:player-client=android',
-      '--dump-json',
-    ];
-
-    if (hasCookies) {
-      args.push('--cookies', cookiesPath);
-    }
-
-    const info = await ytDlp.getVideoInfo(args);
+    const info = await tryGetVideoInfo(ytDlp, url, PLAYER_CLIENTS, cookiesPath, hasCookies);
 
     // Guard: reject if video too long
     const maxDuration = parseInt(process.env.MAX_DURATION_SECONDS || 1800);
