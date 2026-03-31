@@ -8,6 +8,7 @@ const fs = require('fs');
 
 const infoRoute = require('./routes/info');
 const downloadRoute = require('./routes/download');
+const cookiesRoute = require('./routes/cookies');
 const { globalRateLimit } = require('./middleware/rateLimit');
 
 const app = express();
@@ -36,6 +37,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // API Routes
 app.use('/info', infoRoute);
 app.use('/download', downloadRoute);
+app.use('/cookies', cookiesRoute);
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));

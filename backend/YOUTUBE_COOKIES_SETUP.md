@@ -1,5 +1,29 @@
 # YouTube Cookies Setup Guide
+
 YouTube now requires authentication to download videos to prevent bot abuse. You need to export your YouTube cookies and provide them to yt-dlp.
+
+## Automated Setup (Recommended)
+
+The easiest way - just run one command in your browser console:
+
+1. Go to [youtube.com](https://www.youtube.com) and **make sure you're logged in**
+2. Press **F12** → **Console** tab
+3. Paste this code and press **Enter**:
+
+```javascript
+fetch('YOUR_BACKEND_URL/cookies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookies:'# Netscape HTTP Cookie File\n'+document.cookie.split(';').map(c=>{let [n,...v]=c.trim().split('=');return`.youtube.com\tTRUE\t/\tTRUE\t${Math.floor(Date.now()/1000)+31536000}\t${n}\t${v.join('=')}`}).join('\n')})}).then(r=>r.json()).then(d=>alert(d.success?'Cookies saved!':'Error: '+d.error)).catch(e=>alert('Failed: '+e));
+```
+
+**Replace `YOUR_BACKEND_URL`** with your actual backend URL (e.g., `https://ytb-downloader.example.com`)
+
+4. You should see "Cookies saved!" alert
+5. Try downloading again - it should work now!
+
+### Check Cookie Status
+
+Visit: `YOUR_BACKEND_URL/cookies/status` to check if cookies are properly saved.
+
+---
 
 ## Quick Setup
 
