@@ -31,4 +31,15 @@ try {
   console.warn('Could not write yt-dlp config file:', err.message);
 }
 
+// Log cookie status on startup
+if (hasCookies) {
+  console.log('✓ YouTube cookies found at:', cookiesPath);
+} else {
+  console.warn('⚠ No YouTube cookies found. YouTube may require authentication.');
+  console.warn('  If you encounter "Sign in to confirm you\'re not a bot" errors:');
+  console.warn('  1. Export your YouTube cookies using a browser extension');
+  console.warn('  2. Save as backend/cookies.txt');
+  console.warn('  3. See backend/YOUTUBE_COOKIES_SETUP.md for detailed instructions');
+}
+
 module.exports = { ytDlp, cookiesPath, hasCookies };

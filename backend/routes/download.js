@@ -90,10 +90,20 @@ router.all('/', validateYouTubeUrl, async (req, res) => {
     cleanup();
     console.error('[/download error]', err.message);
     if (!res.headersSent) {
-      res.status(500).json({ 
-        error: 'Download failed. Video may be unavailable or server is blocked.', 
-        detail: err.message 
-      });
+      let errorMessage = 'Download failed.';
+      let errorDetail = err.message;
+      
+      if (err.message.includes('Sign in to confirm') || err.message.includes('not a bot')) {
+        errorMessage = 'YouTube requires authentication. Please set up cookies.';
+        errorDetail = 'YouTube is detecting bot behavior. You need to export your YouTube cookies and place them in backend/cookies.txt. See backend/YOUTUBE_COOKIES_SETUP.md for instructions.';
+      } else if (err.message.includes('Video unavailable')) {
+        errorMessage = 'Video is unavailable or private.';
+      } else if (!hasCookies) {
+        errorMessage = 'Download failed. YouTube may require authentication.';
+        errorDetail = err.message + '\n\nTip: If you see bot detection errors, set up cookies. See backend/YOUTUBE_COOKIES_SETUP.md';
+      }
+      
+      res.status(500).json({ error: errorMessage, detail: errorDetail });
     }
   }
 });
