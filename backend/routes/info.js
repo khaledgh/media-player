@@ -18,6 +18,7 @@ router.get('/', async (req, res) => {
       '--no-check-certificates',
       '--no-playlist',
       '--geo-bypass',
+      '--js-runtimes', 'node',
       '--dump-json',
     ];
 

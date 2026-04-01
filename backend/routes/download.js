@@ -18,6 +18,7 @@ router.all('/', async (req, res) => {
       '--no-check-certificates',
       '--no-playlist',
       '--geo-bypass',
+      '--js-runtimes', 'node',
       '--dump-json',
     ];
     if (hasCookies) infoArgs.push('--cookies', cookiesPath);
@@ -45,6 +46,7 @@ router.all('/', async (req, res) => {
       '--no-playlist',
       '--no-check-certificates',
       '--geo-bypass',
+      '--js-runtimes', 'node',
     ];
     if (hasCookies) dlArgs.push('--cookies', cookiesPath);
 
