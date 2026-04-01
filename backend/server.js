@@ -28,7 +28,7 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
   methods: ['GET', 'POST'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(globalRateLimit);
 
 // Serve test UI
@@ -37,6 +37,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // API Routes
 app.use('/info', infoRoute);
 app.use('/download', downloadRoute);
+app.use('/cookies', cookiesRoute);
 app.use('/cookies', cookiesRoute);
 
 // Health check
