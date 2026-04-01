@@ -5,6 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const getPyPath = require('../utils/ytdlp');
 
+const TMP_DIR = path.join(__dirname, '..', 'tmp');
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
+
 router.all('/', async (req, res) => {
   const url = req.query.url || (req.body && req.body.url);
   if (!url) return res.status(400).json({ error: 'Missing YouTube URL' });
@@ -12,7 +15,6 @@ router.all('/', async (req, res) => {
   const { ytdlpPath, cookiesPath, hasCookies } = getPyPath();
 
   try {
-    // 1. Fetch video info using execFileSync (no shell, no quoting issues)
     const infoArgs = [
       url,
       '--no-check-certificates',
@@ -25,25 +27,20 @@ router.all('/', async (req, res) => {
     if (hasCookies) infoArgs.push('--cookies', cookiesPath);
 
     console.log('[download] Fetching info:', ytdlpPath, infoArgs.join(' '));
-
-    const infoStdout = execFileSync(ytdlpPath, infoArgs, {
-      encoding: 'utf8',
-      timeout: 30000,
-    });
+    const infoStdout = execFileSync(ytdlpPath, infoArgs, { encoding: 'utf8', timeout: 30000 });
     const info = JSON.parse(infoStdout);
     const safeTitle = info.title.replace(/[^\w\s-]/gi, '').trim() || 'audio';
 
-    // 2. Set response headers
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
-    res.setHeader('X-Video-Title', encodeURIComponent(info.title));
-    res.setHeader('X-Video-Duration', info.duration || 0);
+    const fileName = `dl_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const outputTemplate = path.join(TMP_DIR, `${fileName}.%(ext)s`);
 
-    // 3. Stream: yt-dlp | ffmpeg -> response (spawn = no shell)
     const dlArgs = [
       url,
-      '-f', 'bestaudio',
-      '-o', '-',
+      '-f', 'bestaudio/best', // fallback to best if bestaudio not found
+      '-x', // extract audio
+      '--audio-format', 'mp3',
+      '--audio-quality', '192K', // high quality mp3
+      '-o', outputTemplate,
       '--no-playlist',
       '--no-check-certificates',
       '--geo-bypass',
@@ -52,45 +49,57 @@ router.all('/', async (req, res) => {
     ];
     if (hasCookies) dlArgs.push('--cookies', cookiesPath);
 
-    console.log('[download] Streaming:', ytdlpPath, dlArgs.join(' '));
-
+    console.log('[download] Starting background download:', ytdlpPath, dlArgs.join(' '));
     const ytProcess = spawn(ytdlpPath, dlArgs);
-    const ffProcess = spawn('ffmpeg', [
-      '-i', 'pipe:0',
-      '-vn',
-      '-acodec', 'libmp3lame',
-      '-ab', '192k',
-      '-ar', '44100',
-      '-f', 'mp3',
-      'pipe:1',
-    ]);
+    let ytError = '';
 
-    ytProcess.stdout.pipe(ffProcess.stdin);
-    ffProcess.stdout.pipe(res);
+    ytProcess.stderr.on('data', (d) => {
+      ytError += d.toString();
+      console.log('[yt-dlp]', d.toString());
+    });
 
-    ytProcess.stderr.on('data', (d) => console.log('[yt-dlp]', d.toString()));
-    ffProcess.stderr.on('data', (d) => console.log('[ffmpeg]', d.toString()));
+    ytProcess.stdout.on('data', (d) => {
+      console.log('[yt-dlp msg]', d.toString());
+    });
 
     ytProcess.on('error', (err) => {
-      console.error('[yt-dlp error]', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'yt-dlp failed', detail: err.message });
+      console.error('[yt-dlp spawn error]', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'yt-dlp process failed', detail: err.message });
     });
 
-    ffProcess.on('error', (err) => {
-      console.error('[ffmpeg error]', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'ffmpeg failed', detail: err.message });
-    });
+    ytProcess.on('close', (code) => {
+      if (code !== 0) {
+        if (!res.headersSent) {
+          return res.status(500).json({ error: 'Download or conversion failed.', detail: ytError });
+        }
+        return;
+      }
 
-    res.on('close', () => {
-      ytProcess.kill();
-      ffProcess.kill();
+      const expectedFile = path.join(TMP_DIR, `${fileName}.mp3`);
+      if (!fs.existsSync(expectedFile)) {
+        if (!res.headersSent) {
+          return res.status(500).json({ error: 'MP3 file was not generated.', detail: ytError });
+        }
+        return;
+      }
+
+      res.setHeader('X-Video-Title', encodeURIComponent(info.title));
+      res.setHeader('X-Video-Duration', info.duration || 0);
+
+      // Send the file and clean it up immediately after
+      res.download(expectedFile, `${safeTitle}.mp3`, (err) => {
+        if (err) console.error('Error sending file to client:', err);
+        if (fs.existsSync(expectedFile)) {
+          fs.unlinkSync(expectedFile);
+        }
+      });
     });
 
   } catch (err) {
     console.error('[download error]', err.stderr || err.message);
     if (!res.headersSent) {
       res.status(500).json({
-        error: 'Download failed.',
+        error: 'Failed to initiate download.',
         detail: (err.stderr || err.message || '').substring(0, 500),
       });
     }
