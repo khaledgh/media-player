@@ -47,7 +47,7 @@ router.post('/', (req, res) => {
     res.json({ success: true, message: 'cookies.txt updated successfully!' });
   } catch (err) {
     console.error('Error saving cookies:', err.message);
-    res.status(500).json({ error: 'Failed to save cookies on server.' });
+    res.status(500).json({ error: 'Failed to save cookies on server.', detail: err.message });
   }
 });
 
