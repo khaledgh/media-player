@@ -25,7 +25,7 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
 app.use(helmet({ contentSecurityPolicy: false })); // CSP disabled so test UI works
 app.use(morgan('dev'));
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+  origin: '*',
   methods: ['GET', 'POST'],
 }));
 app.use(express.json({ limit: '1mb' }));
