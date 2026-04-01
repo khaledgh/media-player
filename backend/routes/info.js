@@ -19,6 +19,7 @@ router.get('/', async (req, res) => {
       '--no-playlist',
       '--geo-bypass',
       '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=ios,android,web',
       '--dump-json',
     ];
 

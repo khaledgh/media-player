@@ -19,6 +19,7 @@ router.all('/', async (req, res) => {
       '--no-playlist',
       '--geo-bypass',
       '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=ios,android,web',
       '--dump-json',
     ];
     if (hasCookies) infoArgs.push('--cookies', cookiesPath);
@@ -47,6 +48,7 @@ router.all('/', async (req, res) => {
       '--no-check-certificates',
       '--geo-bypass',
       '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=ios,android,web',
     ];
     if (hasCookies) dlArgs.push('--cookies', cookiesPath);
 
