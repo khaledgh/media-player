@@ -102,6 +102,7 @@ router.all('/', async (req, res) => {
       '--no-check-certificates',
       '--geo-bypass',
       '--js-runtimes', 'node',
+    ];
     if (hasCookies) dlArgs.push('--cookies', cookiesPath);
 
     console.log('[download] Streaming:', ytdlpPath, dlArgs.join(' '));
