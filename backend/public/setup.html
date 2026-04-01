@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader | Cookie Setup Guide</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+        .gradient-text { background: linear-gradient(135deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    </style>
+</head>
+<body class="min-h-screen py-10 px-4">
+    <div class="max-w-3xl mx-auto">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-bold gradient-text mb-2">YouTube Cookie Setup</h1>
+            <p class="text-slate-400">Bypass the "Bot" block by syncing your YouTube session.</p>
+        </header>
+
+        <!-- Steps Container -->
+        <div class="space-y-6">
+            <!-- Step 1 -->
+            <div class="glass p-6 rounded-2xl flex items-start gap-5">
+                <div class="bg-blue-500/20 text-blue-400 p-3 rounded-lg font-bold text-xl h-12 w-12 flex items-center justify-center shrink-0">1</div>
+                <div>
+                    <h3 class="text-xl font-semibold mb-2">Install Chrome Extension</h3>
+                    <p class="text-slate-400 mb-4">You need an extension that can export Netscape-formatted cookies.</p>
+                    <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/ccmclokmhdnhbeobamaacobgejocnobj" target="_blank" class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 transition-colors text-white py-2 px-4 rounded-full text-sm font-semibold">
+                        Install Extension ➔
+                    </a>
+                </div>
+            </div>
+
+            <!-- Step 2 -->
+            <div class="glass p-6 rounded-2xl flex items-start gap-5">
+                <div class="bg-indigo-500/20 text-indigo-400 p-3 rounded-lg font-bold text-xl h-12 w-12 flex items-center justify-center shrink-0">2</div>
+                <div>
+                    <h3 class="text-xl font-semibold mb-2">Log in to YouTube</h3>
+                    <p class="text-slate-400">Ensure you are logged into your Google account on YouTube in a separate Chrome tab.</p>
+                </div>
+            </div>
+
+            <!-- Step 3 -->
+            <div class="glass p-6 rounded-2xl flex items-start gap-5">
+                <div class="bg-purple-500/20 text-purple-400 p-3 rounded-lg font-bold text-xl h-12 w-12 flex items-center justify-center shrink-0">3</div>
+                <div>
+                    <h3 class="text-xl font-semibold mb-2">Export Cookies</h3>
+                    <p class="text-slate-400">Click the extension icon, ensure **Netscape** format is selected, and click **Export**. Copy the **ENTIRE** text content.</p>
+                </div>
+            </div>
+
+            <!-- Step 4 (Sync) -->
+            <div id="sync-container" class="glass p-8 rounded-3xl border-2 border-blue-500/30 relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-4 opacity-10">
+                    <svg class="w-24 h-24 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 21c-4.411 0-8-3.589-8-8 0-3.35 2.072-6.221 5-7.411v2.223A6.003 6.003 0 0 0 6 13c0 3.309 2.691 6 6 6s6-2.691 6-6c0-2.617-1.676-4.83-4-5.659V5.125c3.326.887 6 3.913 6 7.875 0 4.411-3.589 8-8 8z"/><path d="M11 2h2v10h-2z"/></svg>
+                </div>
+                <div class="relative z-10">
+                    <h3 class="text-2xl font-bold mb-4">Paste & Sync to Server</h3>
+                    <textarea id="cookieContent" rows="8" placeholder="# Netscape HTTP Cookie File..." class="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-xs font-mono text-blue-300 focus:outline-none focus:border-blue-500 transition-colors mb-6 resize-none" spellcheck="false"></textarea>
+                    
+                    <div class="flex items-center gap-4">
+                        <button onclick="syncCookies()" class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-4 px-8 rounded-2xl transition-all h-14 flex items-center shadow-lg shadow-blue-900/40 transform active:scale-95">
+                            Sync to Server ➔
+                        </button>
+                        <div id="status-badge" class="hidden py-2 px-4 rounded-full text-sm font-semibold border"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="mt-20 text-center text-slate-500 text-sm">
+            Powered by AntiGravity • Links Bridge Media Player
+        </footer>
+    </div>
+
+    <script>
+        async function syncCookies() {
+            const content = document.getElementById('cookieContent').value;
+            const badge = document.getElementById('status-badge');
+            
+            if (!content.trim()) {
+                showStatus('Please paste the cookie text first!', 'red');
+                return;
+            }
+
+            badge.innerHTML = "Processing...";
+            badge.className = "py-2 px-4 rounded-full text-sm font-semibold border border-slate-600 animate-pulse block";
+
+            try {
+                const response = await fetch('/cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        key: 'sonic_secret_key_123', // Your environment secret
+                        content: content 
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('✅ Cookies Synced Successfully!', 'green');
+                    document.getElementById('cookieContent').value = '';
+                } else {
+                    showStatus('❌ ' + (data.error || 'Sync Failed'), 'red');
+                }
+            } catch (err) {
+                showStatus('❌ Network Error: Server unreachable', 'red');
+            }
+        }
+
+        function showStatus(text, color) {
+            const badge = document.getElementById('status-badge');
+            badge.innerHTML = text;
+            badge.className = `py-2 px-4 rounded-full text-sm font-semibold border block transition-all animate-none`;
+            
+            if (color === 'red') {
+                badge.classList.add('bg-red-500/10', 'text-red-400', 'border-red-500/30');
+            } else {
+                badge.classList.add('bg-green-500/10', 'text-green-400', 'border-green-500/30');
+            }
+        }
+    </script>
+</body>
+</html>
