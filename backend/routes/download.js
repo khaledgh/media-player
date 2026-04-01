@@ -5,8 +5,14 @@ const path = require('path');
 const fs = require('fs');
 const getPyPath = require('../utils/ytdlp');
 
-router.get('/', async (req, res) => {
-  const { url } = req.query;
+router.all('/', async (req, res) => {
+  // Support both GET (?url=...) and POST ({url: ...})
+  const url = req.query.url || req.body.url;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'Missing YouTube URL' });
+  }
+
   const { ytdlpPath, cookiesPath, hasCookies } = getPyPath();
 
   try {
