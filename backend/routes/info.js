@@ -1,82 +1,59 @@
 const express = require('express');
 const router = express.Router();
-const { validateYouTubeUrl } = require('../middleware/validateUrl');
-const { ytDlp, cookiesPath, hasCookies } = require('../utils/ytdlp');
+const { exec } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const getPyPath = require('../utils/ytdlp');
 
-// Player clients to try in order of preference
-const PLAYER_CLIENTS = ['mweb', 'android', 'ios', 'tv_embedded'];
-
-async function tryGetVideoInfo(ytDlp, url, playerClients, cookiesPath, hasCookies) {
-  let lastError = null;
-  
-  for (const client of playerClients) {
-    try {
-      const args = [
-        url,
-        '--no-check-certificates',
-        '--no-playlist',
-        '--geo-bypass',
-        '--no-cookies-from-browser',
-        '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        '--extractor-args', `youtube:player-client=${client}`,
-        '--dump-json',
-      ];
-
-      if (hasCookies) {
-        args.push('--cookies', cookiesPath);
-      }
-
-      const info = await ytDlp.getVideoInfo(args);
-      return info;
-    } catch (err) {
-      console.log(`[info] Player client '${client}' failed:`, err.message.split('\n')[0]);
-      lastError = err;
-    }
-  }
-  
-  throw lastError;
-}
-
-router.get('/', validateYouTubeUrl, async (req, res) => {
+router.get('/', async (req, res) => {
   const { url } = req.query;
 
   try {
-    const info = await tryGetVideoInfo(ytDlp, url, PLAYER_CLIENTS, cookiesPath, hasCookies);
+    const { ytdlpPath, cookiesPath, hasCookies } = getPyPath();
 
-    // Guard: reject if video too long
-    const maxDuration = parseInt(process.env.MAX_DURATION_SECONDS || 1800);
-    if (info.duration > maxDuration) {
-      return res.status(400).json({
-        error: `Video too long. Max allowed: ${maxDuration / 60} minutes.`
-      });
+    // Simplify arguments to avoid format errors
+    const args = [
+      `"${url}"`,
+      '--no-check-certificates',
+      '--no-playlist',
+      '--geo-bypass',
+      '--js-runtimes', 'node',
+      '--dump-json',
+      '-f', 'best'
+    ];
+
+    if (hasCookies) {
+      args.push('--cookies', `"${cookiesPath}"`);
     }
 
-    res.json({
-      title: info.title,
-      author: info.uploader,
-      duration: info.duration,           // seconds
-      thumbnail: info.thumbnail,         // URL
-      filesize: info.filesize_approx,    // bytes (approx)
-      webpage_url: info.webpage_url,
+    const command = `${ytdlpPath} ${args.join(' ')}`;
+    console.log('Running info command:', command);
+
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.error('[yt-dlp info error]', stderr);
+        return res.status(500).json({ 
+          error: 'Failed to fetch video info.', 
+          detail: stderr || error.message 
+        });
+      }
+
+      try {
+        const info = JSON.parse(stdout);
+        res.json({
+          id: info.id,
+          title: info.title,
+          thumbnail: info.thumbnail,
+          duration: info.duration,
+          view_count: info.view_count,
+          uploader: info.uploader
+        });
+      } catch (parseError) {
+        res.status(500).json({ error: 'Failed to parse video info.' });
+      }
     });
-
   } catch (err) {
-    console.error('[/info error]', err.message);
-    
-    let errorMessage = 'Failed to fetch video info.';
-    let errorDetail = err.message;
-    
-    if (err.message.includes('Sign in to confirm') || err.message.includes('not a bot')) {
-      errorMessage = 'YouTube requires authentication. Please set up cookies.';
-      errorDetail = 'YouTube is detecting bot behavior. You need to export your YouTube cookies and place them in backend/cookies.txt. See backend/YOUTUBE_COOKIES_SETUP.md for instructions.';
-    } else if (err.message.includes('Video unavailable')) {
-      errorMessage = 'Video is unavailable or private.';
-    } else if (!hasCookies) {
-      errorMessage = 'YouTube may require authentication.';
-      errorDetail = err.message + '\n\nTip: If you see bot detection errors, set up cookies. See backend/YOUTUBE_COOKIES_SETUP.md';
-    }
-    
-    res.status(500).json({ error: errorMessage, detail: errorDetail });
+    res.status(500).json({ error: 'Server error', detail: err.message });
   }
 });
 

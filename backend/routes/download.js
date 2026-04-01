@@ -1,131 +1,76 @@
 const express = require('express');
 const router = express.Router();
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
-const { v4: uuidv4 } = require('uuid');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { validateYouTubeUrl } = require('../middleware/validateUrl');
-const { ytDlp, cookiesPath, hasCookies } = require('../utils/ytdlp');
+const getPyPath = require('../utils/ytdlp');
 
-ffmpeg.setFfmpegPath(ffmpegPath);
-const TMP_DIR = path.join(__dirname, '../tmp');
-
-// Player clients to try in order of preference
-const PLAYER_CLIENTS = ['mweb', 'android', 'ios', 'tv_embedded'];
-
-async function tryGetVideoInfo(ytDlp, url, playerClients, cookiesPath, hasCookies) {
-  let lastError = null;
-  
-  for (const client of playerClients) {
-    try {
-      const args = [
-        url,
-        '--no-check-certificates',
-        '--no-playlist',
-        '--geo-bypass',
-        '--no-cookies-from-browser',
-        '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        '--extractor-args', `youtube:player-client=${client}`,
-        '--dump-json',
-      ];
-
-      if (hasCookies) {
-        args.push('--cookies', cookiesPath);
-      }
-
-      const info = await ytDlp.getVideoInfo(args);
-      return { info, client };
-    } catch (err) {
-      console.log(`[download] Player client '${client}' failed:`, err.message.split('\n')[0]);
-      lastError = err;
-    }
-  }
-  
-  throw lastError;
-}
-
-router.all('/', validateYouTubeUrl, async (req, res) => {
-  const url = req.query.url || req.body?.url;
-  const quality = req.query.quality || req.body?.quality || '192';
-  const tmpFile = path.join(TMP_DIR, `${uuidv4()}.mp3`);
-  let cleanupDone = false;
-
-  const cleanup = () => {
-    if (!cleanupDone && fs.existsSync(tmpFile)) {
-      try {
-        fs.unlinkSync(tmpFile);
-      } catch (err) {
-        console.error('Cleanup error:', err.message);
-      }
-      cleanupDone = true;
-    }
-  };
+router.get('/', async (req, res) => {
+  const { url } = req.query;
+  const { ytdlpPath, cookiesPath, hasCookies } = getPyPath();
 
   try {
-    // Get title for filename using fallback strategy
-    const { info, client } = await tryGetVideoInfo(ytDlp, url, PLAYER_CLIENTS, cookiesPath, hasCookies);
-    const safeTitle = info.title.replace(/[^a-z0-9\s\-_]/gi, '').trim() || 'audio';
+    // 1. Fetch info first to get Title & Duration
+    console.log('Fetching info for download:', url);
+    const infoArgs = [
+      `"${url}"`,
+      '--no-check-certificates',
+      '--no-playlist',
+      '--geo-bypass',
+      '--js-runtimes', 'node',
+      '--dump-json'
+    ];
+    if (hasCookies) infoArgs.push('--cookies', `"${cookiesPath}"`);
 
-    // Set response headers
+    const infoCmd = `${ytdlpPath} ${infoArgs.join(' ')}`;
+    const infoStdout = execSync(infoCmd, { encoding: 'utf8' });
+    const info = JSON.parse(infoStdout);
+
+    const safeTitle = info.title.replace(/[^\w\s-]/gi, '').trim() || 'video';
+
+    // 2. Stream audio using yt-dlp | FFmpeg
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
     res.setHeader('X-Video-Title', encodeURIComponent(info.title));
     res.setHeader('X-Video-Duration', info.duration);
 
-    // Stream audio from yt-dlp → FFmpeg → response (use same client that worked for info)
     const args = [
-      url,
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+      `"${url}"`,
+      '-f', 'bestaudio',
       '-o', '-',
       '--no-playlist',
       '--no-check-certificates',
       '--geo-bypass',
-      '--no-cookies-from-browser',
-      '--user-agent', 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-      '--extractor-args', `youtube:player-client=${client}`,
+      '--js-runtimes', 'node'
     ];
+    if (hasCookies) args.push('--cookies', `"${cookiesPath}"`);
 
-    if (hasCookies) {
-      args.push('--cookies', cookiesPath);
-    }
+    const ytProcess = spawn(ytdlpPath, args);
+    const ffmpegProcess = spawn('ffmpeg', [
+      '-i', 'pipe:0',
+      '-vn',
+      '-acodec', 'libmp3lame',
+      '-ab', '192k',
+      '-ar', '44100',
+      '-f', 'mp3',
+      'pipe:1'
+    ]);
 
-    const audioStream = ytDlp.execStream(args);
+    ytProcess.stdout.pipe(ffmpegProcess.stdin);
+    ffmpegProcess.stdout.pipe(res);
 
-    const ffmpegProcess = ffmpeg(audioStream)
-      .audioBitrate(quality)
-      .format('mp3')
-      .on('error', (err) => {
-        console.error('[FFmpeg error]', err.message);
-        cleanup();
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Conversion failed', detail: err.message });
-        }
-      });
+    ytProcess.stderr.on('data', (data) => console.log('[yt-dlp stream]:', data.toString()));
+    ffmpegProcess.stderr.on('data', (data) => console.log('[ffmpeg]:', data.toString()));
 
-    ffmpegProcess.pipe(res, { end: true });
-
-    res.on('close', cleanup);
-    res.on('finish', cleanup);
+    res.on('close', () => {
+      ytProcess.kill();
+      ffmpegProcess.kill();
+    });
 
   } catch (err) {
-    cleanup();
     console.error('[/download error]', err.message);
     if (!res.headersSent) {
-      let errorMessage = 'Download failed.';
-      let errorDetail = err.message;
-      
-      if (err.message.includes('Sign in to confirm') || err.message.includes('not a bot')) {
-        errorMessage = 'YouTube requires authentication. Please set up cookies.';
-        errorDetail = 'YouTube is detecting bot behavior. You need to export your YouTube cookies and place them in backend/cookies.txt. See backend/YOUTUBE_COOKIES_SETUP.md for instructions.';
-      } else if (err.message.includes('Video unavailable')) {
-        errorMessage = 'Video is unavailable or private.';
-      } else if (!hasCookies) {
-        errorMessage = 'Download failed. YouTube may require authentication.';
-        errorDetail = err.message + '\n\nTip: If you see bot detection errors, set up cookies. See backend/YOUTUBE_COOKIES_SETUP.md';
-      }
-      
-      res.status(500).json({ error: errorMessage, detail: errorDetail });
+      res.status(500).json({ error: 'Download failed.', detail: err.message });
     }
   }
 });
