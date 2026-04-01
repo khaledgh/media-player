@@ -16,15 +16,14 @@ router.all('/', async (req, res) => {
   const { ytdlpPath, cookiesPath, hasCookies } = getPyPath();
 
   try {
-    // 1. Fetch info first to get Title & Duration
-    console.log('Fetching info for download:', url);
+    // 1. Fetch info first
     const infoArgs = [
       `"${url}"`,
       '--no-check-certificates',
       '--no-playlist',
       '--geo-bypass',
       '--js-runtimes', 'node',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '--user-agent', '"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--dump-json'
     ];
     if (hasCookies) infoArgs.push('--cookies', `"${cookiesPath}"`);
@@ -35,14 +34,15 @@ router.all('/', async (req, res) => {
 
     const safeTitle = info.title.replace(/[^\w\s-]/gi, '').trim() || 'video';
 
-    // 2. Stream audio using yt-dlp | FFmpeg
+    // 2. Stream audio
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
     res.setHeader('X-Video-Title', encodeURIComponent(info.title));
     res.setHeader('X-Video-Duration', info.duration);
 
+    // Using spawn here is safer, so we DON'T add double-quotes in the array
     const args = [
-      `"${url}"`,
+      url,
       '-f', 'bestaudio',
       '-o', '-',
       '--no-playlist',
@@ -51,7 +51,7 @@ router.all('/', async (req, res) => {
       '--js-runtimes', 'node',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
-    if (hasCookies) args.push('--cookies', `"${cookiesPath}"`);
+    if (hasCookies) args.push('--cookies', cookiesPath);
 
     const ytProcess = spawn(ytdlpPath, args);
     const ffmpegProcess = spawn('ffmpeg', [
