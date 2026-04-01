@@ -38,7 +38,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/info', infoRoute);
 app.use('/download', downloadRoute);
 app.use('/cookies', cookiesRoute);
-app.use('/cookies', cookiesRoute);
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));

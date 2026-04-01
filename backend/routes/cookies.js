@@ -7,6 +7,26 @@ const COOKIES_PATH = path.join(__dirname, '..', 'cookies.txt');
 const UPDATE_KEY = process.env.COOKIE_UPDATE_KEY || 'sonic_secret_key_123';
 
 /**
+ * GET /cookies/status
+ * Check if cookies are set
+ */
+router.get('/status', (req, res) => {
+  const exists = fs.existsSync(COOKIES_PATH);
+  let status = { exists };
+
+  if (exists) {
+    const stats = fs.statSync(COOKIES_PATH);
+    status.lastModified = stats.mtime;
+    status.size = stats.size;
+    status.message = "✅ Cookie file is active on server!";
+  } else {
+    status.message = "❌ Cookie file is missing.";
+  }
+
+  res.json(status);
+});
+
+/**
  * POST /cookies
  * Update the cookies.txt file on the server
  */
