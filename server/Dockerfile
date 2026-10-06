@@ -18,4 +18,5 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /mume-server ./cmd/serv
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /mume-server /mume-server
 EXPOSE 8080
+# The listening port comes from PORT (default 8080)
 ENTRYPOINT ["/mume-server"]

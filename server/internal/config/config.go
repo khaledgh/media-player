@@ -72,11 +72,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// PORT sets the listening port; ADDR (host:port) overrides it when both are set.
+	port := env("PORT", "8080")
 	c := &Config{
-		Addr:           env("ADDR", ":8080"),
+		Addr:           env("ADDR", ":"+port),
 		DBDSN:          env("DB_DSN", "root@tcp(127.0.0.1:3306)/mume_dev?parseTime=true&multiStatements=true&charset=utf8mb4"),
 		JWTSecret:      os.Getenv("JWT_SECRET"),
-		PublicURL:      env("PUBLIC_URL", "http://localhost:8080"),
+		PublicURL:      env("PUBLIC_URL", "http://localhost:"+port),
 		StorageDriver:  storageDriver,
 		DataDir:        env("DATA_DIR", "./data"),
 		S3Endpoint:     endpoint,
