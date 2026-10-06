@@ -1,157 +1,106 @@
-import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from 'expo-audio';
+import TrackPlayer, { State, Event, usePlaybackState, useProgress } from 'react-native-track-player';
+import { setupPlayer } from './PlaybackService';
 
 class AudioPlayerService {
-  private player: AudioPlayer | null = null;
-  private currentTrack: any = null;
-  private isPlayingState: boolean = false;
-  private positionSeconds: number = 0;
-  private durationSeconds: number = 0;
+  private isSetup: boolean = false;
   private listeners: Map<string, Set<Function>> = new Map();
-  private progressInterval: ReturnType<typeof setInterval> | null = null;
-
+  private sleepTimerId: ReturnType<typeof setTimeout> | null = null;
   async setupPlayer() {
-    await setAudioModeAsync({
-      playsInSilentMode: true,
-      shouldPlayInBackground: true,
-      interruptionMode: 'duckOthers',
+    if (this.isSetup) return;
+    this.isSetup = await setupPlayer();
+
+    // Listen for track changes (auto-next handled natively by TrackPlayer)
+    TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, (event) => {
+      if (event.track) {
+        this.emit('trackChanged', {
+          id: event.track.id,
+          title: event.track.title,
+          artist: event.track.artist,
+          url: event.track.url,
+        });
+      }
     });
+
+    // Listen for playback state changes
+    TrackPlayer.addEventListener(Event.PlaybackState, (event) => {
+      const isPlaying = event.state === State.Playing;
+      this.emit('playbackStateChanged', { isPlaying });
+    });
+
+    // Listen for queue ended (loop restarts automatically via RepeatMode.Queue)
+    TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
+      this.emit('queueEnded', {});
+    });
+
+    // Emit initial state
+    const state = await TrackPlayer.getPlaybackState();
+    const isInitialPlaying = state.state === State.Playing;
+    this.emit('playbackStateChanged', { isPlaying: isInitialPlaying });
+  }
+
+  async loadPlaylist(tracks: Array<{ id: string; url: string; title: string; artist: string }>, startIndex: number = 0) {
+    if (!this.isSetup) await this.setupPlayer();
+    
+    await TrackPlayer.reset();
+    const queue = tracks.map(t => ({
+      id: t.id,
+      url: t.url,
+      title: t.title || 'Unknown Track',
+      artist: t.artist || 'SonicGroup Library',
+      artwork: 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png', // Fallback artwork helps with visibility
+    }));
+    
+    await TrackPlayer.add(queue);
+    
+    // Always call skip even if it's 0 to ensure the track is loaded into the player
+    if (queue.length > 0) {
+      await TrackPlayer.skip(startIndex);
+    }
+    
+    // Trigger initial play to ensure notification shows up immediately
+    await TrackPlayer.play();
   }
 
   async loadTrack(track: { id: string; url: string; title: string; artist: string }) {
-    // Release the previous player if it exists
-    if (this.player) {
-      const oldPlayer = this.player;
-      this.player = null; // Mark as null immediately to prevent other calls from using it
-      this.stopProgressTracking();
-      
-      try {
-        oldPlayer.pause();
-        oldPlayer.setActiveForLockScreen(false);
-        oldPlayer.remove();
-      } catch (e) {
-        console.error("Cleanup error", e);
-      }
-      
-      // Small delay to let Android release the audio focus/hardware
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    this.currentTrack = track;
-
-    // Create a new AudioPlayer with the track URI
-    const newPlayer = createAudioPlayer({ uri: track.url });
-    this.player = newPlayer;
-
-    // Enable lock screen controls
-    this.player.setActiveForLockScreen(true, {
+    await TrackPlayer.reset();
+    await TrackPlayer.add({
+      id: track.id,
+      url: track.url,
       title: track.title,
       artist: track.artist,
     });
-
-    // Start tracking progress
-    this.startProgressTracking();
   }
 
-  play() {
-    if (this.player) {
-      this.player.play();
-      this.isPlayingState = true;
-      this.emit('playbackStateChanged', { isPlaying: true });
-    }
+  async play() { await TrackPlayer.play(); }
+  async pause() { await TrackPlayer.pause(); }
+  async stop() { await TrackPlayer.stop(); }
+  async reset() { await TrackPlayer.reset(); }
+  async seekTo(positionSeconds: number) { await TrackPlayer.seekTo(positionSeconds); }
+
+  async skipToNext() {
+    try { await TrackPlayer.skipToNext(); } catch (e) {}
   }
 
-  pause() {
-    if (this.player) {
-      this.player.pause();
-      this.isPlayingState = false;
-      this.emit('playbackStateChanged', { isPlaying: false });
-    }
+  async skipToPrevious() {
+    try { await TrackPlayer.skipToPrevious(); } catch (e) {}
   }
 
-  stop() {
-    if (this.player) {
-      this.player.pause();
-      this.player.seekTo(0);
-      this.isPlayingState = false;
-      this.emit('playbackStateChanged', { isPlaying: false });
-    }
-  }
+  async getState() {
+    const state = await TrackPlayer.getPlaybackState();
+    const progress = await TrackPlayer.getProgress();
+    const track = await TrackPlayer.getActiveTrack();
 
-  async reset() {
-    this.stopProgressTracking();
-    if (this.player) {
-      const oldPlayer = this.player;
-      this.player = null;
-      try {
-        oldPlayer.pause();
-        oldPlayer.setActiveForLockScreen(false);
-        oldPlayer.remove();
-      } catch (e) {
-        console.error("Error in reset cleanup", e);
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    this.currentTrack = null;
-    this.isPlayingState = false;
-    this.positionSeconds = 0;
-    this.durationSeconds = 0;
-  }
-
-  async seekTo(positionSeconds: number) {
-    if (this.player) {
-      await this.player.seekTo(positionSeconds);
-    }
-  }
-
-  getState() {
-    if (this.player) {
-      return {
-        isPlaying: this.player.playing,
-        position: this.player.currentTime,
-        duration: this.player.duration,
-        currentTrack: this.currentTrack,
-      };
-    }
     return {
-      isPlaying: false,
-      position: 0,
-      duration: 0,
-      currentTrack: this.currentTrack,
+      isPlaying: state.state === State.Playing,
+      position: progress.position,
+      duration: progress.duration,
+      currentTrack: track ? {
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        url: track.url,
+      } : null,
     };
-  }
-
-  private startProgressTracking() {
-    this.stopProgressTracking();
-    this.progressInterval = setInterval(() => {
-      if (this.player) {
-        const currentTime = this.player.currentTime;
-        const duration = this.player.duration;
-        const isPlaying = this.player.playing;
-
-        this.positionSeconds = currentTime;
-        this.durationSeconds = duration;
-        this.isPlayingState = isPlaying;
-
-        this.emit('progressUpdate', {
-          position: currentTime,
-          duration: duration,
-        });
-
-        // Check if playback has ended (position reached duration)
-        // Check for position being very close to duration and player not playing
-        if (duration > 0 && currentTime >= (duration - 0.5) && !isPlaying) {
-          this.emit('trackEnded', {});
-          this.stopProgressTracking(); // Stop until next load
-        }
-      }
-    }, 500);
-  }
-
-  private stopProgressTracking() {
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = null;
-    }
   }
 
   addEventListener(event: string, callback: Function) {
@@ -165,6 +114,28 @@ class AudioPlayerService {
     if (this.listeners.has(event)) {
       this.listeners.get(event)!.delete(callback);
     }
+  }
+
+  /** Start a sleep timer; automatically pauses after `minutes` minutes. */
+  startSleepTimer(minutes: number) {
+    this.clearSleepTimer();
+    if (minutes <= 0) return;
+    this.sleepTimerId = setTimeout(async () => {
+      await TrackPlayer.pause();
+      this.sleepTimerId = null;
+      this.emit('sleepTimerFired', {});
+    }, minutes * 60 * 1000);
+  }
+
+  clearSleepTimer() {
+    if (this.sleepTimerId !== null) {
+      clearTimeout(this.sleepTimerId);
+      this.sleepTimerId = null;
+    }
+  }
+
+  get hasSleepTimer(): boolean {
+    return this.sleepTimerId !== null;
   }
 
   private emit(event: string, data: any) {

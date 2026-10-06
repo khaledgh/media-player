@@ -1,361 +1,363 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, Dimensions, StyleSheet } from 'react-native';
-import { usePlaylistStore } from '../store/PlaylistStore';
+import React, { useCallback, useEffect, useRef } from 'react';
+import {
+  View, Text, TouchableOpacity, Dimensions, StyleSheet,
+  FlatList, Animated as RNAnimated,
+} from 'react-native';
+import { useProgress, usePlaybackState, useActiveTrack, State } from 'react-native-track-player';
 import AudioPlayerService from '../services/AudioPlayerService';
-import { Play, Pause, SkipBack, SkipForward, X, Volume2, Repeat, Shuffle } from 'lucide-react-native';
+import {
+  Play, Pause, SkipBack, SkipForward, ChevronDown, Share2,
+  Shuffle, Repeat, Repeat1, ListMusic, X,
+} from 'lucide-react-native';
 import Animated, {
-    useSharedValue,
-    useAnimatedStyle,
-    withSpring,
-    withRepeat,
-    withTiming,
-    Easing,
+  useSharedValue, useAnimatedStyle, withRepeat, withTiming,
+  withSequence, withDelay, Easing, cancelAnimation,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
+import { LinearGradient } from 'expo-linear-gradient';
+import { usePlaylistStore } from '../store/PlaylistStore';
+import { getTrackGradient } from '../utils/trackColors';
+import * as Haptics from 'expo-haptics';
 
-interface PlayerProps {
-    onClose: () => void;
-}
+const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const NUM_BARS = 14;
 
-const { width } = Dimensions.get('window');
+// ── Animated Equalizer Bar ─────────────────────────────────────────────────
+const EqBar = ({ isPlaying, index }: { isPlaying: boolean; index: number }) => {
+  const h = useSharedValue(6);
+  const minH = 6 + (index % 3) * 4;
+  const maxH = 22 + (index % 5) * 10;
+  const dur = 300 + (index * 47) % 400;
 
-const Music = ({ color, size }: { color: string; size: number }) => {
-    return <Text style={{ color, fontSize: size }}>♪</Text>;
+  useEffect(() => {
+    if (isPlaying) {
+      h.value = withRepeat(
+        withSequence(
+          withDelay(index * 40, withTiming(maxH, { duration: dur, easing: Easing.inOut(Easing.sin) })),
+          withTiming(minH, { duration: dur, easing: Easing.inOut(Easing.sin) }),
+        ),
+        -1, true
+      );
+    } else {
+      cancelAnimation(h);
+      h.value = withTiming(minH, { duration: 200 });
+    }
+  }, [isPlaying]);
+
+  const barStyle = useAnimatedStyle(() => ({
+    height: h.value,
+    opacity: isPlaying ? 0.85 : 0.2,
+  }));
+
+  return (
+    <Animated.View
+      style={[
+        {
+          width: 4, borderRadius: 2,
+          backgroundColor: index % 4 === 0 ? '#a78bfa' : index % 4 === 1 ? '#7c3aed' : 'rgba(255,255,255,0.3)',
+        },
+        barStyle,
+      ]}
+    />
+  );
 };
 
-const Player: React.FC<PlayerProps> = ({ onClose }) => {
-    const { currentTrack, currentPlaylist, setCurrentTrack } = usePlaylistStore();
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [progress, setProgress] = useState({ position: 0, duration: 0 });
+// ── Album Art (gradient) ───────────────────────────────────────────────────
+const AlbumArt = ({ trackId, size, animStyle }: { trackId: string | number; size: number; animStyle: any }) => {
+  const [c1, c2] = getTrackGradient(trackId);
+  return (
+    <Animated.View style={[{ width: size, height: size }, animStyle]}>
+      <LinearGradient
+        colors={[c1, c2]}
+        style={{ width: size, height: size, borderRadius: size * 0.2, alignItems: 'center', justifyContent: 'center' }}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+      >
+        <View style={[st.artInner, { borderRadius: size * 0.12, width: size * 0.42, height: size * 0.42 }]}>
+          <Text style={{ fontSize: size * 0.2, color: 'rgba(255,255,255,0.9)', fontWeight: '900' }}>
+            {String(trackId).slice(0, 2).toUpperCase()}
+          </Text>
+        </View>
+      </LinearGradient>
+    </Animated.View>
+  );
+};
 
+// ── Main Player ─────────────────────────────────────────────────────────────
+const Player = ({ onClose }: { onClose: () => void }) => {
+    const { position, duration } = useProgress();
+    const playbackState = usePlaybackState();
+    const activeTrack = useActiveTrack();
     const insets = useSafeAreaInsets();
+    const { isShuffled, repeatMode, currentPlaylist, toggleShuffle, cycleRepeatMode, addToRecentlyPlayed } = usePlaylistStore();
+    const isPlaying = playbackState.state === State.Playing;
 
-    const scale = useSharedValue(0.8);
+    // Queue panel
+    const queueAnim = useRef(new RNAnimated.Value(0)).current;
+    const [showQueue, setShowQueue] = React.useState(false);
+
+    const openQueue = () => {
+      setShowQueue(true);
+      RNAnimated.spring(queueAnim, { toValue: 1, useNativeDriver: true, tension: 60, friction: 10 }).start();
+    };
+    const closeQueue = () => {
+      RNAnimated.timing(queueAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => setShowQueue(false));
+    };
+
     const rotation = useSharedValue(0);
     const pulseScale = useSharedValue(1);
-    const titleY = useSharedValue(0);
 
     useEffect(() => {
-        // Animate in
-        scale.value = withSpring(1, { damping: 10 });
-
-        const handlePlaybackStateChange = (state: any) => {
-            setIsPlaying(state.isPlaying);
-        };
-
-        const handleProgressUpdate = (progressData: any) => {
-            setProgress(progressData);
-        };
-
-        AudioPlayerService.addEventListener('playbackStateChanged', handlePlaybackStateChange);
-        AudioPlayerService.addEventListener('progressUpdate', handleProgressUpdate);
-
-        const state = AudioPlayerService.getState();
-        setIsPlaying(state.isPlaying);
-        setProgress({ position: state.position, duration: state.duration });
-
-        return () => {
-            AudioPlayerService.removeEventListener('playbackStateChanged', handlePlaybackStateChange);
-            AudioPlayerService.removeEventListener('progressUpdate', handleProgressUpdate);
-        };
-    }, []);
-
-    useEffect(() => {
-        if (isPlaying) {
-            scale.value = withSpring(1, { damping: 10 });
-            rotation.value = withRepeat(
-                withTiming(360, { duration: 10000, easing: Easing.linear }),
-                -1, false
-            );
-            pulseScale.value = withRepeat(
-                withTiming(1.05, { duration: 1000 }),
-                -1, true
-            );
-            titleY.value = withRepeat(
-                withTiming(-5, { duration: 1500 }),
-                -1, true
-            );
-        } else {
-            scale.value = withSpring(0.9, { damping: 10 });
-            rotation.value = withTiming(0, { duration: 500 });
-            pulseScale.value = withTiming(1, { duration: 300 });
-            titleY.value = withTiming(0, { duration: 300 });
-        }
+      if (isPlaying) {
+        rotation.value = withRepeat(withTiming(360, { duration: 15000, easing: Easing.linear }), -1, false);
+        pulseScale.value = withRepeat(withTiming(1.04, { duration: 2200, easing: Easing.bezier(0.4, 0, 0.2, 1) }), -1, true);
+      } else {
+        cancelAnimation(rotation);
+        cancelAnimation(pulseScale);
+        pulseScale.value = withTiming(1, { duration: 300 });
+      }
     }, [isPlaying]);
 
-    const containerAnimStyle = useAnimatedStyle(() => ({
-        transform: [{ scale: scale.value }],
-        opacity: scale.value,
+    // Record recently played on track change
+    useEffect(() => {
+      if (activeTrack) {
+        const match = currentPlaylist.find(t => String(t.id) === String(activeTrack.id));
+        if (match) addToRecentlyPlayed(match);
+      }
+    }, [activeTrack?.id]);
+
+    const discStyle = useAnimatedStyle(() => ({
+      transform: [{ rotate: `${rotation.value}deg` }, { scale: pulseScale.value }],
     }));
 
-    const discAnimStyle = useAnimatedStyle(() => ({
-        transform: [
-            { rotate: `${rotation.value}deg` },
-            { scale: pulseScale.value },
-        ],
-    }));
-
-    const titleAnimStyle = useAnimatedStyle(() => ({
-        transform: [{ translateY: titleY.value }],
-    }));
-
-    const togglePlayback = () => {
-        if (isPlaying) {
-            AudioPlayerService.pause();
-        } else {
-            AudioPlayerService.play();
-        }
+    const formatTime = (s: number) => {
+      const m = Math.floor(s / 60);
+      return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
     };
 
-    const handleSkipNext = async () => {
-        if (!currentTrack || currentPlaylist.length <= 1) return;
-        const currentIndex = currentPlaylist.findIndex(t => t.id === currentTrack.id);
-        const nextIndex = (currentIndex + 1) % currentPlaylist.length;
-        const nextTrack = currentPlaylist[nextIndex];
-        
-        setCurrentTrack(nextTrack);
-        await AudioPlayerService.reset();
-        await AudioPlayerService.loadTrack({
-            id: nextTrack.id.toString(),
-            url: nextTrack.local_uri,
-            title: nextTrack.name,
-            artist: 'Local Library'
-        });
-        AudioPlayerService.play();
+    const hapticPress = async (fn: () => void | Promise<void>) => {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await fn();
     };
 
-    const handleSkipPrevious = async () => {
-        if (!currentTrack || currentPlaylist.length <= 1) return;
-        const currentIndex = currentPlaylist.findIndex(t => t.id === currentTrack.id);
-        const prevIndex = (currentIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
-        const prevTrack = currentPlaylist[prevIndex];
-        
-        setCurrentTrack(prevTrack);
-        await AudioPlayerService.reset();
-        await AudioPlayerService.loadTrack({
-            id: prevTrack.id.toString(),
-            url: prevTrack.local_uri,
-            title: prevTrack.name,
-            artist: 'Local Library'
-        });
-        AudioPlayerService.play();
-    };
+    if (!activeTrack) return null;
 
-    const formatTime = (seconds: number) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    const progressPercent = progress.duration > 0 ? (progress.position / progress.duration) * 100 : 0;
+    const [artC1] = getTrackGradient(activeTrack.id ?? activeTrack.title ?? 'default');
+    const queueTranslate = queueAnim.interpolate({ inputRange: [0, 1], outputRange: [SCREEN_HEIGHT, 0] });
+    const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat;
+    const repeatColor = repeatMode === 'off' ? '#334155' : '#a78bfa';
 
     return (
-        <View style={[st.container, { paddingTop: Math.max(insets.top, 32), paddingBottom: Math.max(insets.bottom, 32) }]}>
-            <View style={st.topBar}>
-                <Text style={st.nowPlaying}>NOW PLAYING</Text>
-                <TouchableOpacity onPress={onClose} style={st.closeBtn}>
-                    <X color="white" size={24} />
-                </TouchableOpacity>
-            </View>
+      <View style={st.container}>
+        <LinearGradient colors={[artC1 + '55', '#050510', '#000']} style={StyleSheet.absoluteFill} />
 
-            {/* Visualizer/Art Area */}
+        <View style={[st.safeArea, { paddingTop: Math.max(insets.top, 20), paddingBottom: Math.max(insets.bottom, 20) }]}>
+          {/* Top Bar */}
+          <View style={st.topBar}>
+            <TouchableOpacity onPress={onClose} style={st.topBtn}>
+              <ChevronDown color="#fff" size={24} />
+            </TouchableOpacity>
+            <View style={st.topCenter}>
+              <Text style={st.playingFrom}>NOW PLAYING</Text>
+              <Text style={st.nowPlaying} numberOfLines={1}>{activeTrack.title}</Text>
+            </View>
+            <TouchableOpacity style={st.topBtn}>
+              <Share2 color="#fff" size={20} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={st.content}>
+            {/* Album Art */}
             <View style={st.artArea}>
-                <Animated.View style={[st.artBox, containerAnimStyle]}>
-                    <Animated.View style={[st.disc, discAnimStyle]}>
-                        <Music color="white" size={60} />
-                    </Animated.View>
-                </Animated.View>
+              <AlbumArt
+                trackId={activeTrack.id ?? activeTrack.title ?? 'default'}
+                size={width * 0.72}
+                animStyle={discStyle}
+              />
             </View>
 
-            {/* Song Info */}
-            <View style={st.songInfo}>
-                <Animated.Text style={[st.songTitle, titleAnimStyle]} numberOfLines={2}>
-                    {currentTrack?.name || 'Local File'}
-                </Animated.Text>
-                <Text style={st.songArtist}>SonicGroup Library</Text>
+            {/* Track Info */}
+            <View style={st.infoRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={st.trackTitle} numberOfLines={1}>{activeTrack.title}</Text>
+                <Text style={st.trackArtist} numberOfLines={1}>{activeTrack.artist || 'My Library'}</Text>
+              </View>
             </View>
-            {/* Progress Bar */}
-            <View style={st.progressSection}>
-                <Slider
-                    style={st.slider}
-                    minimumValue={0}
-                    maximumValue={progress.duration || 1}
-                    value={progress.position}
-                    onSlidingComplete={async (val) => {
-                        await AudioPlayerService.seekTo(val);
-                    }}
-                    minimumTrackTintColor="#2563eb"
-                    maximumTrackTintColor="rgba(255,255,255,0.1)"
-                    thumbTintColor="#2563eb"
-                />
-                <View style={st.progressTimeContainer}>
-                    <Text style={st.timeText}>{formatTime(progress.position)}</Text>
-                    <Text style={st.timeText}>{formatTime(progress.duration)}</Text>
-                </View>
+
+            {/* Animated Equalizer */}
+            <View style={st.eqRow}>
+              {Array.from({ length: NUM_BARS }).map((_, i) => (
+                <EqBar key={i} isPlaying={isPlaying} index={i} />
+              ))}
+            </View>
+
+            {/* Progress */}
+            <View style={st.progressArea}>
+              <Slider
+                style={st.slider}
+                minimumValue={0}
+                maximumValue={duration || 1}
+                value={position}
+                onSlidingComplete={val => AudioPlayerService.seekTo(val)}
+                minimumTrackTintColor="#a78bfa"
+                maximumTrackTintColor="rgba(255,255,255,0.1)"
+                thumbTintColor="#fff"
+              />
+              <View style={st.timeLabels}>
+                <Text style={st.timeText}>{formatTime(position)}</Text>
+                <Text style={st.timeText}>{formatTime(duration)}</Text>
+              </View>
             </View>
 
             {/* Controls */}
             <View style={st.controls}>
-                <TouchableOpacity style={st.secondaryBtn}>
-                    <Shuffle color="#444" size={24} />
+              <TouchableOpacity onPress={() => hapticPress(toggleShuffle)} style={st.sideBtn}>
+                <Shuffle color={isShuffled ? '#a78bfa' : '#334155'} size={22} />
+              </TouchableOpacity>
+
+              <View style={st.mainControls}>
+                <TouchableOpacity onPress={() => hapticPress(() => AudioPlayerService.skipToPrevious())} style={st.skipBtn}>
+                  <SkipBack color="#fff" size={28} fill="#fff" />
                 </TouchableOpacity>
 
-                <View style={st.mainControls}>
-                    <TouchableOpacity onPress={handleSkipPrevious} style={st.skipBtn}>
-                        <SkipBack color="white" size={32} />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity onPress={togglePlayback} style={st.playBtn}>
-                        {isPlaying ? <Pause color="white" size={40} fill="white" /> : <Play color="white" size={40} fill="white" />}
-                    </TouchableOpacity>
-
-                    <TouchableOpacity onPress={handleSkipNext} style={st.skipBtn}>
-                        <SkipForward color="white" size={32} />
-                    </TouchableOpacity>
-                </View>
-
-                <TouchableOpacity style={st.secondaryBtn}>
-                    <Repeat color="#444" size={24} />
+                <TouchableOpacity
+                  onPress={() => hapticPress(() => isPlaying ? AudioPlayerService.pause() : AudioPlayerService.play())}
+                  style={st.playBtn}
+                >
+                  {isPlaying
+                    ? <Pause color="#000" size={32} fill="#000" />
+                    : <Play color="#000" size={32} fill="#000" style={{ marginLeft: 4 }} />
+                  }
                 </TouchableOpacity>
+
+                <TouchableOpacity onPress={() => hapticPress(() => AudioPlayerService.skipToNext())} style={st.skipBtn}>
+                  <SkipForward color="#fff" size={28} fill="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={() => hapticPress(cycleRepeatMode)} style={st.sideBtn}>
+                <RepeatIcon color={repeatColor} size={22} />
+              </TouchableOpacity>
             </View>
 
-            <View style={st.footer}>
-                <View style={st.footerContent}>
-                    <Volume2 color="#666" size={16} />
-                    <Text style={st.footerText}>HIGH FIDELITY AUDIO</Text>
-                </View>
-            </View>
+            {/* Queue toggle */}
+            <TouchableOpacity style={st.queueToggle} onPress={openQueue} activeOpacity={0.7}>
+              <ListMusic color="#64748b" size={18} style={{ marginRight: 8 }} />
+              <Text style={st.queueToggleTxt}>Up Next ({currentPlaylist.filter(t => !t.missing).length} tracks)</Text>
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {/* Queue Panel */}
+        {showQueue && (
+          <RNAnimated.View style={[st.queuePanel, { transform: [{ translateY: queueTranslate }] }]}>
+            <View style={st.queueHandle} />
+            <View style={st.queueHeader}>
+              <Text style={st.queueTitle}>Up Next</Text>
+              <TouchableOpacity onPress={closeQueue} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <X color="#94a3b8" size={20} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={currentPlaylist.filter(t => !t.missing)}
+              keyExtractor={item => String(item.id)}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
+              renderItem={({ item }) => {
+                const isActive = String(item.id) === String(activeTrack?.id);
+                const [c1, c2] = getTrackGradient(item.id);
+                return (
+                  <View style={[st.queueItem, isActive && st.queueItemActive]}>
+                    <LinearGradient colors={[c1, c2]} style={st.queueArt}>
+                      <Text style={st.queueArtTxt}>{item.name.slice(0, 2).toUpperCase()}</Text>
+                    </LinearGradient>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[st.queueName, isActive && { color: '#a78bfa' }]} numberOfLines={1}>{item.name}</Text>
+                      <Text style={st.queueArtist} numberOfLines={1}>My Library</Text>
+                    </View>
+                    {isActive && <View style={st.activeDot} />}
+                  </View>
+                );
+              }}
+            />
+          </RNAnimated.View>
+        )}
+      </View>
     );
 };
 
 const st = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#000',
-        paddingHorizontal: 32,
-    },
-    topBar: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 32,
-    },
-    nowPlaying: {
-        color: '#6b7280',
-        fontWeight: 'bold',
-        fontSize: 12,
-        letterSpacing: 4,
-    },
-    closeBtn: {
-        padding: 8,
-        backgroundColor: '#111827',
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#1f2937',
-    },
-    artArea: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 32,
-    },
-    artBox: {
-        width: '100%',
-        height: width - 64,
-        backgroundColor: '#111827',
-        borderRadius: 24,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: '#1f2937',
-    },
-    disc: {
-        width: 192,
-        height: 192,
-        backgroundColor: '#2563eb',
-        borderRadius: 96,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    songInfo: {
-        marginBottom: 32,
-        alignItems: 'center',
-        height: 80,
-    },
-    songTitle: {
-        fontSize: 24,
-        fontWeight: '900',
-        color: '#fff',
-        textAlign: 'center',
-        marginBottom: 8,
-    },
-    songArtist: {
-        color: '#3b82f6',
-        fontWeight: 'bold',
-        opacity: 0.75,
-    },
-    progressSection: {
-        marginBottom: 32,
-    },
-    slider: {
-        width: '100%',
-        height: 40,
-    },
-    progressTimeContainer: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginTop: 12,
-    },
-    timeText: {
-        color: '#6b7280',
-        fontSize: 12,
-        fontWeight: 'bold',
-    },
-    controls: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 24,
-    },
-    secondaryBtn: {
-        padding: 12,
-        backgroundColor: 'rgba(17,24,39,0.5)',
-        borderRadius: 999,
-    },
-    mainControls: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    skipBtn: {
-        padding: 12,
-    },
-    playBtn: {
-        width: 80,
-        height: 80,
-        backgroundColor: '#2563eb',
-        borderRadius: 40,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 4,
-        borderColor: '#000',
-    },
-    footer: {
-        marginTop: 'auto',
-        alignItems: 'center',
-    },
-    footerContent: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        opacity: 0.4,
-    },
-    footerText: {
-        color: '#4b5563',
-        fontSize: 10,
-        marginLeft: 8,
-        fontWeight: 'bold',
-        letterSpacing: 4,
-    },
+  container: { flex: 1, backgroundColor: '#000' },
+  safeArea: { flex: 1 },
+  topBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, height: 72,
+  },
+  topBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  topCenter: { flex: 1, alignItems: 'center', paddingHorizontal: 10 },
+  playingFrom: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 1.5 },
+  nowPlaying: { color: '#fff', fontSize: 15, fontWeight: '700', marginTop: 2 },
+  content: { flex: 1, justifyContent: 'space-evenly', paddingHorizontal: 28, paddingBottom: 12 },
+  artArea: { alignItems: 'center' },
+  artInner: {
+    position: 'absolute', backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  infoRow: { flexDirection: 'row', alignItems: 'center' },
+  trackTitle: { color: '#fff', fontSize: 24, fontWeight: '900', letterSpacing: -0.5, marginBottom: 4 },
+  trackArtist: { color: '#a78bfa', fontSize: 15, fontWeight: '600', opacity: 0.85 },
+  eqRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    height: 52, gap: 5,
+  },
+  progressArea: { marginTop: 4 },
+  slider: { width: '100%', height: 36 },
+  timeLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: -4, paddingHorizontal: 4 },
+  timeText: { color: '#64748b', fontSize: 12, fontWeight: '700' },
+  controls: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6,
+  },
+  sideBtn: { padding: 12 },
+  mainControls: { flexDirection: 'row', alignItems: 'center', gap: 22 },
+  skipBtn: { padding: 10 },
+  playBtn: {
+    width: 80, height: 80, borderRadius: 40, backgroundColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#fff', shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35, shadowRadius: 14, elevation: 12,
+  },
+  queueToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
+  queueToggleTxt: { color: '#475569', fontSize: 13, fontWeight: '600' },
+  queuePanel: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    height: SCREEN_HEIGHT * 0.62,
+    backgroundColor: '#0f0f1e',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  queueHandle: {
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.15)', alignSelf: 'center', marginTop: 12,
+  },
+  queueHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 16,
+  },
+  queueTitle: { color: '#fff', fontSize: 18, fontWeight: '800' },
+  queueItem: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 10, gap: 12,
+  },
+  queueItemActive: { backgroundColor: 'rgba(124,58,237,0.12)' },
+  queueArt: { width: 44, height: 44, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  queueArtTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  queueName: { color: '#e2e8f0', fontSize: 14, fontWeight: '600' },
+  queueArtist: { color: '#475569', fontSize: 12, marginTop: 2 },
+  activeDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#a78bfa' },
 });
 
 export default Player;

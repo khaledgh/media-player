@@ -1,670 +1,444 @@
-import React, { useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ScrollView, TextInput, Alert, Modal, ActivityIndicator, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View, Text, FlatList, TouchableOpacity, ScrollView, TextInput,
+  Alert, Modal, ActivityIndicator, StyleSheet, KeyboardAvoidingView,
+  Platform, Animated as RNAnimated, Dimensions,
+} from 'react-native';
+import { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { usePlaylistStore } from '../store/PlaylistStore';
+import { useDownloadStore } from '../store/DownloadStore';
 import * as SQLiteService from '../services/SQLiteService';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Plus, FileVideo, Music, ChevronRight, Check, X, Download, ChevronUp, ChevronDown, Trash2 } from 'lucide-react-native';
+import {
+  Music, Check, X, Download, Trash2, FolderPlus,
+  Play, Pause, SkipForward, Youtube,
+} from 'lucide-react-native';
 import { extractAudioFromVideo } from '../services/MediaConverter';
 import AudioPlayerService from '../services/AudioPlayerService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
-const BACKEND_URL = "https://yt.linksbridge.top";
+import FolderDetail from './FolderDetail';
+import DraggableFlatList, { ScaleDecorator } from 'react-native-draggable-flatlist';
+import { useSettingsStore } from '../store/SettingsStore';
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface DashboardProps {
-    onShowPlayer: () => void;
+  onShowPlayer: () => void;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ onShowPlayer }) => {
-    const {
-        availableGroups,
-        selectedGroupIds,
-        currentPlaylist,
-        refreshGroups,
-        toggleGroupSelection,
-        selectGroup,
-        setCurrentTrack,
-        reorderTrack
-    } = usePlaylistStore();
+  const playbackState = usePlaybackState();
+  const isPlaying = playbackState.state === State.Playing;
 
-    const [newGroupName, setNewGroupName] = useState('');
-    const [showAddGroup, setShowAddGroup] = useState(false);
+  const {
+    availableGroups, selectedGroupIds, currentPlaylist, currentTrack,
+    refreshGroups, toggleGroupSelection, selectGroup,
+    setCurrentTrack, reorderTrack,
+  } = usePlaylistStore();
 
-    const [showYTModal, setShowYTModal] = useState(false);
-    const [ytUrl, setYtUrl] = useState('');
-    const [ytLoading, setYtLoading] = useState(false);
-    const [ytStatus, setYtStatus] = useState('');
-    const [ytGroupId, setYtGroupId] = useState<number | null>(null);
+  const { isDownloading, progress, itemName, startDownload, updateProgress, finishDownload, failDownload } = useDownloadStore();
+  const { serverUrl: BACKEND_URL } = useSettingsStore();
 
-    const insets = useSafeAreaInsets();
+  const [showAddGroup, setShowAddGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
 
-    const handleCreateGroup = async () => {
-        if (!newGroupName.trim()) return;
-        try {
-            await SQLiteService.addGroup(newGroupName);
-            setNewGroupName('');
-            setShowAddGroup(false);
+  const [showYTModal, setShowYTModal] = useState(false);
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytLoading, setYtLoading] = useState(false);
+  const [ytStatus, setYtStatus] = useState('');
+  const [ytGroupId, setYtGroupId] = useState<number | null>(null);
+
+  const [showGroupOptions, setShowGroupOptions] = useState<number | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<{ id: number; name: string } | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+
+  const insets = useSafeAreaInsets();
+  const addSheetAnim = useRef(new RNAnimated.Value(0)).current;
+
+  const openAddSheet = () => {
+    setNewGroupName('');
+    setShowAddGroup(true);
+    RNAnimated.spring(addSheetAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 65,
+      friction: 11,
+    }).start();
+  };
+
+  const closeAddSheet = () => {
+    RNAnimated.timing(addSheetAnim, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => setShowAddGroup(false));
+  };
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return;
+    try {
+      await SQLiteService.addGroup(newGroupName.trim());
+      setNewGroupName('');
+      closeAddSheet();
+      await refreshGroups();
+    } catch (error) {
+      Alert.alert("Error", "Group already exists or database error.");
+    }
+  };
+
+  const handleDeleteGroup = async (groupId: number) => {
+    const group = availableGroups.find(g => g.id === groupId);
+    Alert.alert(
+      "Delete Folder",
+      `Delete "${group?.name}" and all its tracks?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete", style: "destructive",
+          onPress: async () => {
+            await SQLiteService.deleteGroup(groupId);
             await refreshGroups();
-        } catch (error) {
-            Alert.alert("Error", "Group already exists or database error.");
+            setShowGroupOptions(null);
+            if (selectedGroupIds.includes(groupId)) {
+              const { refreshPlaylist } = usePlaylistStore.getState();
+              await refreshPlaylist();
+            }
+          }
         }
-    };
+      ]
+    );
+  };
 
-    const handleImportMP3 = async (groupId: number) => {
-        try {
-            const result = await DocumentPicker.getDocumentAsync({
-                type: 'audio/mpeg',
-                copyToCacheDirectory: true,
-                multiple: true,
-            });
+  const handleImportMP3 = async (groupId: number) => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'audio/mpeg',
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
 
-            if (!result.canceled && result.assets && result.assets.length > 0) {
-                for (const asset of result.assets) {
-                    const newUri = `${FileSystem.documentDirectory}${asset.name}`;
-                    await FileSystem.copyAsync({
-                        from: asset.uri,
-                        to: newUri
-                    });
-
-                    await SQLiteService.addFile(asset.name, newUri, groupId);
-                }
-                await selectGroup(groupId);
-            }
-        } catch (error) {
-            console.error("Import error", error);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        for (const asset of result.assets) {
+          const newUri = `${FileSystem.documentDirectory}${asset.name}`;
+          await FileSystem.copyAsync({ from: asset.uri, to: newUri });
+          await SQLiteService.addFile(asset.name, newUri, groupId);
         }
-    };
+        await selectGroup(groupId);
+      }
+    } catch (error) {
+      console.error("Import error", error);
+    }
+  };
 
-    const handleImportVideo = async (groupId: number) => {
-        try {
-            const result = await DocumentPicker.getDocumentAsync({
-                type: 'video/mp4',
-                copyToCacheDirectory: true,
-            });
+  const handleDownloadYouTube = async () => {
+    if (!ytUrl.trim() || !ytGroupId) return;
+    setYtLoading(true);
+    setYtStatus('Fetching video info...');
 
-            if (!result.canceled && result.assets && result.assets.length > 0) {
-                const asset = result.assets[0];
-                const fileName = asset.name.split('.')[0];
+    try {
+      const infoRes = await fetch(`${BACKEND_URL}/info?url=${encodeURIComponent(ytUrl)}`);
+      if (!infoRes.ok) throw new Error('Invalid URL');
+      const info = await infoRes.json();
+      
+      startDownload(info.title);
+      setShowYTModal(false);
+      setYtLoading(false);
 
-                Alert.alert("Processing", "Extracting audio from video...");
-                const mp3Uri = await extractAudioFromVideo(asset.uri, fileName);
+      const fileName = `${info.title.replace(/[^\w]/g, '')}_${Date.now()}.mp3`;
+      const fileUri = `${FileSystem.documentDirectory}${fileName}`;
 
-                if (mp3Uri) {
-                    await SQLiteService.addFile(`${fileName}.mp3`, mp3Uri, groupId);
-                    await selectGroup(groupId);
-                    Alert.alert("Success", "Audio extracted and saved to group!");
-                } else {
-                    Alert.alert("Error", "Extraction failed.");
-                }
-            }
-        } catch (error) {
-            console.error("Import error", error);
+      const dr = FileSystem.createDownloadResumable(
+        `${BACKEND_URL}/download?url=${encodeURIComponent(ytUrl)}`,
+        fileUri,
+        {},
+        (p) => {
+          if (p.totalBytesExpectedToWrite > 0) updateProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
         }
-    };
+      );
 
-    const openYTModal = (groupId: number) => {
-        setYtGroupId(groupId);
-        setYtUrl('');
-        setYtStatus('');
-        setYtLoading(false);
-        setShowYTModal(true);
-    };
+      const res = await dr.downloadAsync();
+      if (res && res.status === 200) {
+        await SQLiteService.addFile(`${info.title}.mp3`, res.uri, ytGroupId);
+        await selectGroup(ytGroupId);
+        finishDownload();
+      }
+    } catch (error: any) {
+      setYtStatus(`Error: ${error.message}`);
+      failDownload(error.message);
+      setYtLoading(false);
+    }
+  };
 
-    const handleDownloadYouTube = async () => {
-        if (!ytUrl.trim() || !ytGroupId) return;
+  const handlePlayTrack = async (track: SQLiteService.MediaFile) => {
+    setCurrentTrack(track);
+    const queue = currentPlaylist.map(t => ({
+      id: t.id.toString(),
+      url: t.local_uri,
+      title: t.name,
+      artist: 'Sonic Library',
+    }));
+    const startIndex = currentPlaylist.findIndex(t => t.id === track.id);
+    await AudioPlayerService.loadPlaylist(queue, Math.max(startIndex, 0));
+    await AudioPlayerService.play();
+    onShowPlayer();
+  };
 
-        setYtLoading(true);
-        setYtStatus('Fetching video info...');
-
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-            const infoRes = await fetch(`${BACKEND_URL}/info?url=${encodeURIComponent(ytUrl)}`, {
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (!infoRes.ok) {
-                const errData = await infoRes.json().catch(() => ({}));
-                throw new Error(errData.error || 'Invalid URL or video not found');
-            }
-            const info = await infoRes.json();
-            const safeTitle = info.title.replace(/[^\w\s-]/gi, '').trim();
-
-            setYtStatus(`Downloading: ${info.title}...`);
-
-            const fileName = `${safeTitle.slice(0, 10)}_${Date.now()}.mp3`;
-            const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-
-            const downloadRes = await FileSystem.downloadAsync(
-                `${BACKEND_URL}/download?url=${encodeURIComponent(ytUrl)}`,
-                fileUri
-            );
-
-            if (downloadRes.status === 200) {
-                await SQLiteService.addFile(`${info.title}.mp3`, downloadRes.uri, ytGroupId);
-                await selectGroup(ytGroupId);
-
-                setYtStatus('');
-                setShowYTModal(false);
-                Alert.alert("Success", `"${info.title}" downloaded and saved!`);
-            } else {
-                throw new Error('Download failed');
-            }
-        } catch (error: any) {
-            console.error("Download error", error);
-            if (error.name === 'AbortError') {
-                setYtStatus('Error: Backend connection timed out. Check your IP/Firewall.');
-            } else {
-                setYtStatus(`Error: ${error.message || 'Could not connect to backend.'}`);
-            }
-        } finally {
-            setYtLoading(false);
-        }
-    };
-
-    const handlePlayTrack = async (track: SQLiteService.MediaFile) => {
-        setCurrentTrack(track);
-        await AudioPlayerService.reset();
-        await AudioPlayerService.loadTrack({
-            id: track.id.toString(),
-            url: track.local_uri,
-            title: track.name,
-            artist: 'Local Library',
-        });
-        AudioPlayerService.play();
-        onShowPlayer();
-    };
-
-    const handleDeleteTrack = async (track: SQLiteService.MediaFile) => {
-        Alert.alert(
-            "Delete Track",
-            `Are you sure you want to delete "${track.name}"?`,
-            [
-                { text: "Cancel", style: "cancel" },
-                { 
-                    text: "Delete", 
-                    style: "destructive",
-                    onPress: async () => {
-                        try {
-                            // Stop if currently playing
-                            const playerState = AudioPlayerService.getState();
-                            if (playerState.currentTrack?.id === track.id.toString()) {
-                              await AudioPlayerService.reset();
-                            }
-
-                            // Delete from DB
-                            await SQLiteService.deleteFile(track.id);
-                            
-                            // Delete from storage if it exists (Optional/Best practice)
-                            try {
-                                const info = await FileSystem.getInfoAsync(track.local_uri);
-                                if (info.exists) {
-                                    await FileSystem.deleteAsync(track.local_uri);
-                                }
-                            } catch (e) {}
-
-                            // Update store
-                            const { deleteTrack } = usePlaylistStore.getState();
-                            deleteTrack(track.id);
-
-                        } catch (error) {
-                            Alert.alert("Error", "Could not delete file.");
-                        }
-                    }
-                }
-            ]
-        );
-    };
-
+  if (selectedFolder) {
     return (
-        <View style={[s.container, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
-            <View style={s.header}>
-                <Text style={s.headerTitle}>SonicGroup</Text>
-                <TouchableOpacity
-                    onPress={() => setShowAddGroup(!showAddGroup)}
-                    style={s.addButton}
-                >
-                    <Plus color="white" size={24} />
-                </TouchableOpacity>
-            </View>
+      <FolderDetail
+        groupId={selectedFolder.id}
+        groupName={selectedFolder.name}
+        onBack={() => setSelectedFolder(null)}
+        onShowPlayer={onShowPlayer}
+      />
+    );
+  }
 
-            {showAddGroup && (
-                <View style={s.addGroupCard}>
-                    <TextInput
-                        placeholder="Group Name"
-                        placeholderTextColor="#666"
-                        style={s.addGroupInput}
-                        value={newGroupName}
-                        onChangeText={setNewGroupName}
-                    />
-                    <TouchableOpacity
-                        onPress={handleCreateGroup}
-                        style={s.createGroupBtn}
-                    >
-                        <Text style={s.createGroupBtnText}>Create Group</Text>
+  return (
+    <View style={[s.container, { paddingTop: Math.max(insets.top, 16) }]}>
+      <View style={s.header}>
+        <View style={s.headerLeft}>
+          <View style={s.avatarBox}>
+            <Text style={s.avatarEmoji}>👤</Text>
+          </View>
+          <View style={s.headerText}>
+            <Text style={s.greeting}>Hello, User</Text>
+          </View>
+        </View>
+
+        {isDownloading && (
+          <View style={s.headerDownloadInfo}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.headerDownloadLabel} numberOfLines={1}>Downloading {itemName}...</Text>
+              <View style={s.headerDownloadBar}>
+                <View style={[s.headerDownloadFill, { width: `${progress * 100}%` }]} />
+              </View>
+            </View>
+            <ActivityIndicator size="small" color="#a78bfa" style={{ marginLeft: 10 }} />
+          </View>
+        )}
+
+        <View style={s.headerIcons}>
+          <TouchableOpacity style={s.iconBtn}>
+            <Text style={s.headerIconText}>🔍</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 160 }}
+        scrollEnabled={!isEditing}
+      >
+        <View style={s.tabScroll}>
+          {['All', 'New Artists', 'Hot Tracks'].map((tab, i) => (
+            <TouchableOpacity key={tab} style={[s.tabPill, i === 0 && s.tabPillActive]}>
+              <Text style={[s.tabPillText, i === 0 && s.tabPillTextActive]}>{tab}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {!isEditing && (
+          <View style={s.section}>
+            <Text style={s.sectionTitle}>For you</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.forYouScroll}>
+              <View style={s.forYouCard}>
+                <View style={[s.forYouGradient, { backgroundColor: '#7c3aed' }]}>
+                  <Text style={s.forYouTitle}>Feel the Beat</Text>
+                  <Text style={s.forYouSubtitle}>Explore curated tracks for your mood.</Text>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        )}
+
+        {!isEditing && (
+          <View style={s.section}>
+            <View style={s.quickInfoSection}>
+              <View style={s.infoCard}>
+                <Text style={s.infoCardNumber}>{currentPlaylist.length}</Text>
+                <Text style={s.infoCardLabel}>Tracks</Text>
+              </View>
+              <View style={[s.infoCard, s.infoCardHighlight]}>
+                <Text style={s.infoCardNumber}>{availableGroups.length}</Text>
+                <Text style={s.infoCardLabel}>Folders</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {!isEditing && (
+          <View style={s.section}>
+            <View style={s.sectionHeaderRow}>
+              <Text style={s.sectionTitle}>Your Library</Text>
+              <TouchableOpacity onPress={openAddSheet}>
+                <Text style={s.showAll}>+ Add Folder</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.folderScroll}>
+              {availableGroups.map((group) => (
+                <TouchableOpacity
+                  key={group.id}
+                  onPress={() => setSelectedFolder({ id: group.id, name: group.name })}
+                  onLongPress={() => setShowGroupOptions(group.id)}
+                  style={s.folderItem}
+                >
+                  <View style={s.folderArt}>
+                    <Text style={s.folderEmoji}>📁</Text>
+                  </View>
+                  <Text style={s.folderLabel} numberOfLines={1}>{group.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>{isEditing ? 'Reorder' : 'Popular'}</Text>
+            <TouchableOpacity onPress={() => setIsEditing(!isEditing)}>
+              <Text style={s.showAll}>{isEditing ? 'Done' : 'Edit'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {isEditing ? (
+            <DraggableFlatList
+              data={currentPlaylist}
+              onDragEnd={({ data }) => {
+                const updates = data.map((t, i) => ({ id: t.id, sortOrder: i }));
+                SQLiteService.updateMultipleFileSortOrders(updates);
+                usePlaylistStore.setState({ currentPlaylist: data });
+              }}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={({ item, drag, isActive }) => (
+                <ScaleDecorator>
+                  <TouchableOpacity onLongPress={drag} disabled={isActive} style={[s.trackItem, isActive && { backgroundColor: 'rgba(124, 58, 237, 0.2)' }]}>
+                    <View style={s.trackArtSmall}><Text style={s.trackEmojiSmall}>🎵</Text></View>
+                    <View style={s.trackInfoSmall}><Text style={s.trackNameSmall}>{item.name}</Text></View>
+                    <View style={s.dragHandle}><Text style={{ color: '#64748b' }}>≡</Text></View>
+                  </TouchableOpacity>
+                </ScaleDecorator>
+              )}
+            />
+          ) : (
+            currentPlaylist.map((track) => (
+              <TouchableOpacity key={track.id} style={s.trackItem} onPress={() => handlePlayTrack(track)}>
+                <View style={s.trackArtSmall}><Text style={s.trackEmojiSmall}>🎵</Text></View>
+                <View style={s.trackInfoSmall}><Text style={s.trackNameSmall}>{track.name}</Text></View>
+                {isPlaying && currentTrack?.id === track.id ? (
+                    <Pause color="#fff" size={14} fill="#fff" />
+                ) : (
+                    <Play color="#fff" size={14} fill="#fff" />
+                )}
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      </ScrollView>
+
+      {showAddGroup && (
+        <View style={StyleSheet.absoluteFill}>
+          <TouchableOpacity style={s.sheetOverlay} activeOpacity={1} onPress={closeAddSheet} />
+          <RNAnimated.View style={[s.sheetContent, { transform: [{ translateY: addSheetAnim.interpolate({ inputRange: [0, 1], outputRange: [600, 0] }) }] }]}>
+            <View style={s.sheetHandle} />
+            <Text style={s.sheetTitle}>New Folder</Text>
+            <TextInput style={s.sheetInput} placeholder="Folder name" placeholderTextColor="#64748b" value={newGroupName} onChangeText={setNewGroupName} autoFocus />
+            <TouchableOpacity style={s.sheetBtn} onPress={handleCreateGroup}><Text style={s.sheetBtnText}>Create</Text></TouchableOpacity>
+            <View style={{ height: 40 + insets.bottom }} />
+          </RNAnimated.View>
+        </View>
+      )}
+
+      <Modal visible={showYTModal} transparent animationType="slide">
+        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => !ytLoading && setShowYTModal(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ width: '100%' }}>
+            <View style={s.modalContent}>
+              <Text style={s.modalTitle}>YouTube Download</Text>
+              <TextInput style={s.modalInput} placeholder="URL" placeholderTextColor="#64748b" value={ytUrl} onChangeText={setYtUrl} />
+              <TouchableOpacity style={s.downloadBtnActive} onPress={handleDownloadYouTube}>
+                {ytLoading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff' }}>Download</Text>}
+              </TouchableOpacity>
+              <View style={{ height: insets.bottom + 20 }} />
+            </View>
+          </KeyboardAvoidingView>
+        </TouchableOpacity>
+      </Modal>
+
+      {showGroupOptions && (
+        <Modal transparent visible animationType="fade">
+            <TouchableOpacity style={s.modalOverlay} onPress={() => setShowGroupOptions(null)}>
+                <View style={s.modalContent}>
+                    <TouchableOpacity style={s.sheetBtn} onPress={() => { handleImportMP3(showGroupOptions); setShowGroupOptions(null); }}>
+                        <Text style={s.sheetBtnText}>Import MP3s</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[s.sheetBtn, { marginTop: 10, backgroundColor: '#dc2626' }]} onPress={() => handleDeleteGroup(showGroupOptions)}>
+                        <Text style={s.sheetBtnText}>Delete Folder</Text>
                     </TouchableOpacity>
                 </View>
-            )}
-
-            {/* Group Horizontal List */}
-            <View style={s.groupSection}>
-                <Text style={s.sectionLabel}>GROUPS</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    {availableGroups.length === 0 && (
-                        <Text style={s.emptyGroupText}>No groups created yet.</Text>
-                    )}
-                    {availableGroups.map((group) => {
-                        const isSelected = selectedGroupIds.includes(group.id);
-                        return (
-                            <TouchableOpacity
-                                key={group.id}
-                                onPress={() => toggleGroupSelection(group.id)}
-                                style={[
-                                    s.groupChip,
-                                    isSelected ? s.groupChipSelected : s.groupChipUnselected,
-                                ]}
-                            >
-                                {isSelected && <Check color="white" size={16} style={{ marginRight: 8 }} />}
-                                <Text style={[s.groupChipText, isSelected ? s.groupChipTextSelected : s.groupChipTextUnselected]}>
-                                    {group.name}
-                                </Text>
-                            </TouchableOpacity>
-                        );
-                    })}
-                </ScrollView>
-            </View>
-
-            {/* Library Queue */}
-            <View style={s.librarySection}>
-                <View style={s.libraryHeader}>
-                    <Text style={s.sectionLabel}>LIBRARY QUEUE</Text>
-                    <View style={s.libraryActions}>
-                        {selectedGroupIds.length > 0 && (
-                          <View style={{ flexDirection: 'row' }}>
-                                <TouchableOpacity onPress={() => openYTModal(selectedGroupIds[0])} style={{ marginRight: 16 }}>
-                                    <Text style={s.ytButton}>YT</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={() => handleImportMP3(selectedGroupIds[0])} style={{ marginRight: 16 }}>
-                                    <Music color="#aaa" size={20} />
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={() => handleImportVideo(selectedGroupIds[0])}>
-                                    <FileVideo color="#aaa" size={20} />
-                                </TouchableOpacity>
-                          </View>
-                        )}
-                    </View>
-                </View>
-
-                <FlatList
-                    data={currentPlaylist}
-                    keyExtractor={(item, index) => `${item.id}-${index}`}
-                    renderItem={({ item, index }) => (
-                        <View style={s.trackContainer}>
-                            <TouchableOpacity
-                                onPress={() => handlePlayTrack(item)}
-                                style={s.trackItem}
-                            >
-                                <View style={s.trackIcon}>
-                                    <Music color="white" size={18} />
-                                </View>
-                                <View style={s.trackInfo}>
-                                    <Text style={s.trackName} numberOfLines={1}>{item.name}</Text>
-                                    <Text style={s.trackSub}>Internal Document</Text>
-                                </View>
-                                <TouchableOpacity 
-                                  onPress={() => handleDeleteTrack(item)}
-                                  style={{ marginLeft: 16 }}
-                                >
-                                    <Trash2 color="#ef4444" size={20} />
-                                </TouchableOpacity>
-                            </TouchableOpacity>
-                            <View style={s.orderButtons}>
-                                <TouchableOpacity 
-                                  onPress={() => reorderTrack(index, index - 1)}
-                                  style={s.orderBtn}
-                                  disabled={index === 0}
-                                >
-                                    <ChevronUp color={index === 0 ? "#222" : "#9ca3af"} size={20} />
-                                </TouchableOpacity>
-                                <TouchableOpacity 
-                                  onPress={() => reorderTrack(index, index + 1)}
-                                  style={s.orderBtn}
-                                  disabled={index === currentPlaylist.length - 1}
-                                >
-                                    <ChevronDown color={index === currentPlaylist.length - 1 ? "#222" : "#9ca3af"} size={20} />
-                                </TouchableOpacity>
-                            </View>
-                        </View>
-                    )}
-                    ListEmptyComponent={
-                        <View style={s.emptyList}>
-                            <Text style={s.emptyListText}>Select groups to see files or import new ones.</Text>
-                            <Text style={s.emptyListHint}>(Import multi-files allowed)</Text>
-                        </View>
-                    }
-                />
-            </View>
-
-            {/* YouTube Download Modal */}
-            <Modal
-                visible={showYTModal}
-                transparent
-                animationType="slide"
-                onRequestClose={() => !ytLoading && setShowYTModal(false)}
-            >
-                <KeyboardAvoidingView
-                    behavior={Platform.OS === "ios" ? "padding" : "height"}
-                    style={{ flex: 1 }}
-                >
-                    <View style={s.modalOverlay}>
-                        <View style={[s.modalContent, { paddingBottom: Math.max(insets.bottom, 40) }]}>
-                            <View style={s.modalHeader}>
-                                <Text style={s.modalTitle}>YouTube Download</Text>
-                                <TouchableOpacity
-                                    onPress={() => !ytLoading && setShowYTModal(false)}
-                                    style={s.modalClose}
-                                >
-                                    <X color="white" size={20} />
-                                </TouchableOpacity>
-                            </View>
-
-                            <Text style={s.modalLabel}>Paste YouTube URL</Text>
-                            <TextInput
-                                placeholder="https://www.youtube.com/watch?v=..."
-                                placeholderTextColor="#555"
-                                style={s.modalInput}
-                                value={ytUrl}
-                                onChangeText={setYtUrl}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                editable={!ytLoading}
-                                selectTextOnFocus
-                            />
-
-                            {ytStatus !== '' && (
-                                <View style={s.statusBox}>
-                                    <Text style={[s.statusText, ytStatus.startsWith('Error') ? s.statusError : s.statusInfo]}>
-                                        {ytStatus}
-                                    </Text>
-                                </View>
-                            )}
-
-                            <TouchableOpacity
-                                onPress={handleDownloadYouTube}
-                                disabled={ytLoading || !ytUrl.trim()}
-                                style={[
-                                    s.downloadBtn,
-                                    (ytLoading || !ytUrl.trim()) ? s.downloadBtnDisabled : s.downloadBtnActive,
-                                ]}
-                            >
-                                {ytLoading ? (
-                                    <ActivityIndicator color="white" size="small" />
-                                ) : (
-                                    <>
-                                        <Download color="white" size={20} />
-                                        <Text style={s.downloadBtnText}>Download Audio</Text>
-                                    </>
-                                )}
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </KeyboardAvoidingView>
-            </Modal>
-        </View>
-    );
+            </TouchableOpacity>
+        </Modal>
+      )}
+    </View>
+  );
 };
 
 const s = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#000',
-        paddingHorizontal: 16,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 24,
-    },
-    headerTitle: {
-        fontSize: 32,
-        fontWeight: '900',
-        color: '#60a5fa',
-        letterSpacing: -1,
-    },
-    addButton: {
-        backgroundColor: '#3b82f6',
-        padding: 10,
-        borderRadius: 14,
-        shadowColor: "#3b82f6",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
-        elevation: 5,
-    },
-    addGroupCard: {
-        marginBottom: 24,
-        backgroundColor: 'rgba(31, 41, 55, 0.4)',
-        padding: 20,
-        borderRadius: 24,
-        borderWidth: 1,
-        borderColor: 'rgba(55, 65, 81, 0.5)',
-    },
-    addGroupInput: {
-        color: '#fff',
-        fontSize: 16,
-        padding: 14,
-        backgroundColor: 'rgba(0, 0, 0, 0.3)',
-        borderRadius: 12,
-        marginBottom: 16,
-        borderWidth: 1,
-        borderColor: 'rgba(75, 85, 99, 0.5)',
-    },
-    createGroupBtn: {
-        backgroundColor: '#3b82f6',
-        padding: 14,
-        borderRadius: 12,
-        alignItems: 'center',
-    },
-    createGroupBtnText: {
-        color: '#fff',
-        fontWeight: 'bold',
-    },
-    groupSection: {
-        marginBottom: 24,
-    },
-    sectionLabel: {
-        color: '#9ca3af',
-        fontWeight: '600',
-        marginBottom: 12,
-    },
-    emptyGroupText: {
-        color: '#4b5563',
-        fontStyle: 'italic',
-    },
-    groupChip: {
-        marginRight: 10,
-        paddingHorizontal: 18,
-        paddingVertical: 10,
-        borderRadius: 14,
-        flexDirection: 'row',
-        alignItems: 'center',
-        borderWidth: 1.5,
-    },
-    groupChipSelected: {
-        backgroundColor: '#3b82f6',
-        borderColor: '#3b82f6',
-    },
-    groupChipUnselected: {
-        backgroundColor: 'rgba(31, 41, 55, 0.3)',
-        borderColor: 'rgba(55, 65, 81, 0.5)',
-    },
-    groupChipText: {
-        fontWeight: '700',
-        fontSize: 14,
-    },
-    groupChipTextSelected: {
-        color: '#fff',
-    },
-    groupChipTextUnselected: {
-        color: '#9ca3af',
-    },
-    librarySection: {
-        flex: 1,
-    },
-    libraryHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
-    },
-    libraryActions: {
-        flexDirection: 'row',
-    },
-    ytButton: {
-        color: '#ef4444',
-        fontWeight: 'bold',
-    },
-    trackContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 12,
-    },
-    trackItem: {
-        backgroundColor: 'rgba(31, 41, 55, 0.3)',
-        padding: 16,
-        borderRadius: 20,
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: 'rgba(55, 65, 81, 0.4)',
-    },
-    orderButtons: {
-        marginLeft: 12,
-        padding: 4,
-        backgroundColor: '#111827',
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#1f2937',
-    },
-    orderBtn: {
-        padding: 4,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    trackIcon: {
-        width: 40,
-        height: 40,
-        backgroundColor: '#1f2937',
-        borderRadius: 8,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    trackInfo: {
-        marginLeft: 16,
-        flex: 1,
-    },
-    trackName: {
-        color: '#fff',
-        fontWeight: 'bold',
-    },
-    trackSub: {
-        color: '#6b7280',
-        fontSize: 12,
-    },
-    emptyList: {
-        alignItems: 'center',
-        marginTop: 40,
-    },
-    emptyListText: {
-        color: '#4b5563',
-    },
-    emptyListHint: {
-        color: '#374151',
-        fontSize: 12,
-        marginTop: 4,
-    },
-    modalOverlay: {
-        flex: 1,
-        justifyContent: 'flex-end',
-        backgroundColor: 'rgba(0,0,0,0.7)',
-    },
-    modalContent: {
-        backgroundColor: '#111827',
-        borderTopLeftRadius: 24,
-        borderTopRightRadius: 24,
-        padding: 24,
-        borderTopWidth: 1,
-        borderTopColor: '#374151',
-    },
-    modalHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 24,
-    },
-    modalTitle: {
-        color: '#fff',
-        fontSize: 20,
-        fontWeight: 'bold',
-    },
-    modalClose: {
-        padding: 8,
-        backgroundColor: '#1f2937',
-        borderRadius: 999,
-    },
-    modalLabel: {
-        color: '#9ca3af',
-        fontSize: 14,
-        marginBottom: 8,
-    },
-    modalInput: {
-        color: '#fff',
-        fontSize: 16,
-        padding: 16,
-        backgroundColor: '#000',
-        borderRadius: 12,
-        marginBottom: 16,
-        borderWidth: 1,
-        borderColor: '#374151',
-    },
-    statusBox: {
-        marginBottom: 16,
-        padding: 12,
-        backgroundColor: '#1f2937',
-        borderRadius: 8,
-    },
-    statusText: {
-        fontSize: 14,
-    },
-    statusError: {
-        color: '#f87171',
-    },
-    statusInfo: {
-        color: '#60a5fa',
-    },
-    downloadBtn: {
-        padding: 16,
-        borderRadius: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    downloadBtnActive: {
-        backgroundColor: '#dc2626',
-    },
-    downloadBtnDisabled: {
-        backgroundColor: '#374151',
-    },
-    downloadBtnText: {
-        color: '#fff',
-        fontWeight: 'bold',
-        fontSize: 16,
-        marginLeft: 8,
-    },
+  container: { flex: 1, backgroundColor: '#050510' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 20 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center' },
+  avatarBox: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center' },
+  avatarEmoji: { fontSize: 20 },
+  headerText: { marginLeft: 12 },
+  greeting: { color: '#fff', fontSize: 22, fontWeight: '800' },
+  headerIcons: { flexDirection: 'row', gap: 10 },
+  iconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
+  headerIconText: { fontSize: 16 },
+  tabScroll: { flexDirection: 'row', paddingHorizontal: 20, marginBottom: 25, gap: 10 },
+  tabPill: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)' },
+  tabPillActive: { backgroundColor: '#7c3aed' },
+  tabPillText: { color: '#64748b', fontWeight: '600', fontSize: 13 },
+  tabPillTextActive: { color: '#fff' },
+  section: { marginBottom: 30, paddingHorizontal: 20 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  sectionTitle: { color: '#fff', fontSize: 18, fontWeight: '800' },
+  showAll: { color: '#64748b', fontSize: 13, fontWeight: '600' },
+  forYouScroll: { marginHorizontal: -20, paddingHorizontal: 20 },
+  forYouCard: { width: SCREEN_WIDTH * 0.75, marginRight: 15 },
+  forYouGradient: { borderRadius: 24, padding: 20, height: 180, justifyContent: 'center' },
+  forYouTitle: { color: '#fff', fontSize: 20, fontWeight: '800', marginBottom: 8 },
+  forYouSubtitle: { color: 'rgba(255,255,255,0.8)', fontSize: 13, lineHeight: 18, marginBottom: 15 },
+  folderScroll: { gap: 15 },
+  folderItem: { width: 80, alignItems: 'center' },
+  folderArt: { width: 64, height: 64, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  folderEmoji: { fontSize: 24 },
+  folderLabel: { color: '#94a3b8', fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  trackItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.02)', padding: 10, borderRadius: 16 },
+  trackArtSmall: { width: 48, height: 48, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
+  trackEmojiSmall: { fontSize: 18 },
+  trackInfoSmall: { flex: 1, marginLeft: 12 },
+  trackNameSmall: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  dragHandle: { padding: 10 },
+  sheetOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0, 0, 0, 0.6)', justifyContent: 'flex-end' },
+  sheetContent: { backgroundColor: '#0f0f1e', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingTop: 12 },
+  sheetHandle: { width: 40, height: 4, backgroundColor: '#1e293b', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  sheetTitle: { color: '#e2e8f0', fontSize: 22, fontWeight: '800', marginBottom: 4 },
+  sheetInput: { color: '#e2e8f0', fontSize: 16, padding: 16, backgroundColor: 'rgba(255, 255, 255, 0.04)', borderRadius: 14, marginBottom: 16 },
+  sheetBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#7c3aed', padding: 16, borderRadius: 14 },
+  sheetBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.6)' },
+  modalContent: { backgroundColor: '#0f0f1e', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 },
+  modalTitle: { color: '#e2e8f0', fontSize: 18, fontWeight: '800', marginBottom: 20 },
+  modalInput: { color: '#e2e8f0', fontSize: 15, padding: 16, backgroundColor: 'rgba(255, 255, 255, 0.04)', borderRadius: 14, marginBottom: 16 },
+  downloadBtnActive: { backgroundColor: '#dc2626', padding: 16, borderRadius: 14, alignItems: 'center' },
+  headerDownloadInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.03)', marginHorizontal: 12, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
+  headerDownloadLabel: { color: '#fff', fontSize: 10, fontWeight: '700', marginBottom: 4 },
+  headerDownloadBar: { height: 3, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' },
+  headerDownloadFill: { height: '100%', backgroundColor: '#a78bfa' },
+  quickInfoSection: { flexDirection: 'row', gap: 12, marginBottom: 24 },
+  infoCard: { flex: 1, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 16, padding: 16, alignItems: 'center' },
+  infoCardHighlight: { backgroundColor: 'rgba(167, 139, 250, 0.1)' },
+  infoCardNumber: { fontSize: 28, fontWeight: '900', color: '#fff', marginBottom: 4 },
+  infoCardLabel: { fontSize: 11, fontWeight: '600', color: '#64748b' },
 });
 
 export default Dashboard;

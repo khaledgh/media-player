@@ -1,141 +1,106 @@
 import React, { useEffect, useState } from 'react';
-import { View, TouchableOpacity, Text, StyleSheet, LogBox, Modal } from 'react-native';
-import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { View, StyleSheet, LogBox, Modal, Platform, PermissionsAndroid } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { usePlaylistStore } from './src/store/PlaylistStore';
+import { useSettingsStore } from './src/store/SettingsStore';
 import AudioPlayerService from './src/services/AudioPlayerService';
 import Dashboard from './src/screens/Dashboard';
 import Player from './src/screens/Player';
-import * as KeepAwake from 'expo-keep-awake';
+import GlobalDownloadBanner from './src/components/GlobalDownloadBanner';
+import MiniPlayer from './src/components/MiniPlayer';
+import BottomTabs from './src/components/BottomTabs';
+import HomeScreen from './src/screens/HomeScreen';
+import SearchScreen from './src/screens/SearchScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 
 LogBox.ignoreLogs(['SafeAreaView has been deprecated']);
 
 const App = () => {
   const insets = useSafeAreaInsets();
-  const { loadInitialData, currentTrack, currentPlaylist, isLoading } = usePlaylistStore();
+  const { loadInitialData, isLoading } = usePlaylistStore();
+  const { loadSettings } = useSettingsStore();
   const [showFullPlayer, setShowFullPlayer] = useState(false);
+  const [activeTab, setActiveTab] = useState('library');
 
   useEffect(() => {
-    KeepAwake.activateKeepAwakeAsync().catch(() => {});
-
     const initialize = async () => {
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        );
+      }
+      await loadSettings();
       await loadInitialData();
       await AudioPlayerService.setupPlayer();
     };
     initialize();
 
-    const handleTrackEnded = async () => {
-        const { currentPlaylist, currentTrack, setCurrentTrack } = usePlaylistStore.getState();
-        if (!currentPlaylist || currentPlaylist.length <= 1 || !currentTrack) return;
-
-        const currentIndex = currentPlaylist.findIndex(t => t.id === currentTrack.id);
-        const nextIndex = (currentIndex + 1) % currentPlaylist.length;
-        const nextTrack = currentPlaylist[nextIndex];
-
-        setCurrentTrack(nextTrack);
-        await AudioPlayerService.reset();
-        await AudioPlayerService.loadTrack({
-            id: nextTrack.id.toString(),
-            url: nextTrack.local_uri,
-            title: nextTrack.name,
-            artist: 'Local Library'
-        });
-        AudioPlayerService.play();
-    };
-
-    AudioPlayerService.addEventListener('trackEnded', handleTrackEnded);
-
-    return () => {
-      KeepAwake.deactivateKeepAwake();
-      AudioPlayerService.removeEventListener('trackEnded', handleTrackEnded);
-    };
+    return () => {};
   }, []);
 
   if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Loading...</Text>
       </View>
     );
   }
 
-  return (
-    <View style={styles.container}>
-      <Dashboard onShowPlayer={() => setShowFullPlayer(true)} />
+  const renderScreen = () => {
+    switch (activeTab) {
+      case 'home':
+        return <HomeScreen onShowPlayer={() => setShowFullPlayer(true)} />;
+      case 'library':
+        return <Dashboard onShowPlayer={() => setShowFullPlayer(true)} />;
+      case 'search':
+        return <SearchScreen onShowPlayer={() => setShowFullPlayer(true)} />;
+      case 'settings':
+        return <SettingsScreen />;
+      default:
+        return <Dashboard onShowPlayer={() => setShowFullPlayer(true)} />;
+    }
+  };
 
-      {currentTrack && !showFullPlayer && (
-        <TouchableOpacity
-          onPress={() => setShowFullPlayer(true)}
-          style={[styles.miniPlayer, { paddingBottom: Math.max(insets.bottom, 16), height: 80 + insets.bottom }]}
-        >
-          <View style={styles.miniPlayerIcon}>
-            <Text style={styles.miniPlayerEmoji}>🎵</Text>
-          </View>
-          <View style={styles.miniPlayerInfo}>
-            <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.name}</Text>
-            <Text style={styles.miniPlayerSubtitle}>Playing...</Text>
-          </View>
-        </TouchableOpacity>
-      )}
+  return (
+    <GestureHandlerRootView style={styles.container}>
+      {/* Global Download Banner */}
+      <View style={{ paddingTop: insets.top }}>
+        <GlobalDownloadBanner />
+      </View>
+
+      {renderScreen()}
+
+      {/* ────── Mini Player ────── */}
+      <MiniPlayer 
+        onShowPlayer={() => setShowFullPlayer(true)} 
+        insetsBottom={60 + insets.bottom} 
+      />
+
+      {/* ────── Bottom Tabs ────── */}
+      <BottomTabs activeTab={activeTab} onTabPress={setActiveTab} />
 
       <Modal
         visible={showFullPlayer}
         animationType="slide"
+        transparent={false}
         onRequestClose={() => setShowFullPlayer(false)}
       >
         <Player onClose={() => setShowFullPlayer(false)} />
       </Modal>
-    </View>
+    </GestureHandlerRootView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: '#050510',
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: '#050510',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  loadingText: {
-    color: '#fff',
-  },
-  miniPlayer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#111827',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#1f2937',
-  },
-  miniPlayerIcon: {
-    width: 48,
-    height: 48,
-    backgroundColor: '#2563eb',
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  miniPlayerEmoji: {
-    color: '#fff',
-  },
-  miniPlayerInfo: {
-    marginLeft: 16,
-    flex: 1,
-  },
-  miniPlayerTitle: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  miniPlayerSubtitle: {
-    color: '#9ca3af',
-    fontSize: 12,
   },
 });
 
