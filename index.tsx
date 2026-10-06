@@ -1,11 +1,12 @@
-import TrackPlayer from "react-native-track-player";
+import TrackPlayer from 'react-native-track-player';
+import { registerRootComponent } from 'expo';
+import React from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import App from './App';
 import playbackService from './src/services/PlaybackService';
-import { registerRootComponent } from "expo";
-import App from "./App";
-import { SafeAreaProvider } from "react-native-safe-area-context";
-import React from "react";
 
-// Register playback service first
+// Must be registered before the app mounts so lock-screen / notification
+// controls work even when the UI is not running.
 TrackPlayer.registerPlaybackService(() => playbackService);
 
 const Root = () => (

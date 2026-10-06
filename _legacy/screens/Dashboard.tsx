@@ -14,7 +14,6 @@ import {
   Music, Check, X, Download, Trash2, FolderPlus,
   Play, Pause, SkipForward, Youtube,
 } from 'lucide-react-native';
-import { extractAudioFromVideo } from '../services/MediaConverter';
 import AudioPlayerService from '../services/AudioPlayerService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FolderDetail from './FolderDetail';

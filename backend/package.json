@@ -17,10 +17,7 @@
     "morgan": "^1.10.1",
     "play-dl": "^1.9.7",
     "uuid": "^9.0.1",
-    "yt-dlp-wrap": "^2.3.12",
-    "expo": "~55.0.5",
-    "react": "19.2.0",
-    "react-native": "0.83.2"
+    "yt-dlp-wrap": "^2.3.12"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

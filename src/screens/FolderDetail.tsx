@@ -1,658 +1,354 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
-import { ChevronLeft, Play, Trash2, GripVertical, Youtube, Music as MusicIcon, Download, Pause, FolderPlus, MoreVertical, X, MoreHorizontal } from 'lucide-react-native';
-import * as SQLiteService from '../services/SQLiteService';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
-import AudioPlayerService from '../services/AudioPlayerService';
-import { usePlaylistStore } from '../store/PlaylistStore';
-import { useDownloadStore } from '../store/DownloadStore';
-import DraggableFlatList, { RenderItemParams, ScaleDecorator } from 'react-native-draggable-flatlist';
+import React, { useCallback, useEffect, useState } from 'react';
+import { BackHandler, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
+import DraggableFlatList, { ScaleDecorator } from 'react-native-draggable-flatlist';
+import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSettingsStore } from '../store/SettingsStore';
+import {
+  ArrowDownUp,
+  CheckCheck,
+  CloudDownload,
+  Copy,
+  EllipsisVertical,
+  FolderInput,
+  FolderPlus,
+  GripVertical,
+  Play,
+  Shuffle,
+  SquarePlay,
+  Trash2,
+  Upload,
+  Users,
+  X,
+} from 'lucide-react-native';
+import Header from '../components/Header';
+import Artwork from '../components/Artwork';
+import SongRow from '../components/SongRow';
+import FolderRow from '../components/FolderRow';
+import FloatingDock from '../components/FloatingDock';
+import { Button, Empty, IconButton, SectionHeader } from '../components/ui';
+import { useLibrary } from '../hooks/useLibrary';
+import { useActions } from '../hooks/useActions';
+import { usePlayer } from '../services/PlayerService';
+import Player from '../services/PlayerService';
+import DownloadManager from '../services/DownloadManager';
+import {
+  copyTracks,
+  getFolder,
+  getFolderStats,
+  getFolderTracks,
+  getFolders,
+  moveItems,
+  removeItems,
+  reorderItems,
+  SORT_LABELS,
+} from '../data/library';
+import type { FolderTrack } from '../data/library';
+import type { RootStackParams } from '../navigation/ref';
+import { navigate } from '../navigation/ref';
+import { colors, font, formatTime, type } from '../theme';
 
-const { width } = Dimensions.get('window');
-
-interface FolderDetailProps {
-  groupId: number;
-  groupName: string;
-  onBack: () => void;
-  onShowPlayer: () => void;
-}
-
-export default function FolderDetail({ groupId, groupName, onBack, onShowPlayer }: FolderDetailProps) {
-  const [files, setFiles] = useState<SQLiteService.MediaFile[]>([]);
-  const [subfolders, setSubfolders] = useState<SQLiteService.Group[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { setCurrentTrack, setIsPlaying, currentTrack, isPlaying } = usePlaylistStore();
-  const { isDownloading, progress, itemName, startDownload, updateProgress, finishDownload, failDownload } = useDownloadStore();
-  const { serverUrl: BACKEND_URL } = useSettingsStore();
+export default function FolderDetail() {
+  const { id } = useRoute<RouteProp<RootStackParams, 'Folder'>>().params;
+  const nav = useNavigation();
   const insets = useSafeAreaInsets();
-  
-  const [showYTModal, setShowYTModal] = useState(false);
-  const [ytUrl, setYtUrl] = useState('');
-  const [ytLoading, setYtLoading] = useState(false);
-  const [ytStatus, setYtStatus] = useState('');
+  const a = useActions();
+  const folder = useLibrary(() => getFolder(id), [id]);
+  const f = folder.data;
+  const tracks = useLibrary(() => (f ? getFolderTracks(id, f.sort_mode) : Promise.resolve([] as FolderTrack[])), [id, f?.sort_mode]);
+  const subfolders = useLibrary(() => getFolders(id), [id]);
+  const stats = useLibrary(() => getFolderStats(id), [id]);
+  const current = usePlayer((s) => s.current?.id);
+  const isPlaying = usePlayer((s) => s.isPlaying);
 
-  const [showAddSubfolder, setShowAddSubfolder] = useState(false);
-  const [newSubfolderName, setNewSubfolderName] = useState('');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const selecting = selected.size > 0;
+  const [reordering, setReordering] = useState(false);
+  const [order, setOrder] = useState<FolderTrack[]>([]);
 
-  const [currentFolderId, setCurrentFolderId] = useState(groupId);
-  const [folderHistory, setFolderHistory] = useState<{id: number, name: string}[]>([]);
-  const [currentFolderName, setCurrentFolderName] = useState(groupName);
-
+  // The folder was deleted (here or on another device).
   useEffect(() => {
-    loadContent();
-  }, [currentFolderId]);
+    if (!folder.loading && folder.data === null) nav.goBack();
+  }, [folder.loading, folder.data, nav]);
 
-  const loadContent = async () => {
-    setLoading(true);
-    try {
-      const folderFiles = await SQLiteService.getFilesByGroupId(currentFolderId);
-      const verified = await SQLiteService.verifyFilesExist(folderFiles);
-      setFiles(verified);
-
-      const subs = await SQLiteService.getGroups(currentFolderId);
-      setSubfolders(subs);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const navigateToSubfolder = (id: number, name: string) => {
-    setFolderHistory([...folderHistory, { id: currentFolderId, name: currentFolderName }]);
-    setCurrentFolderId(id);
-    setCurrentFolderName(name);
-  };
-
-  const handleBack = () => {
-    if (folderHistory.length > 0) {
-      const prev = folderHistory[folderHistory.length - 1];
-      setFolderHistory(folderHistory.slice(0, -1));
-      setCurrentFolderId(prev.id);
-      setCurrentFolderName(prev.name);
-    } else {
-      onBack();
-    }
-  };
-
-  const handleCreateSubfolder = async () => {
-    if (!newSubfolderName.trim()) return;
-    try {
-      await SQLiteService.addGroup(newSubfolderName, currentFolderId);
-      setNewSubfolderName('');
-      setShowAddSubfolder(false);
-      await loadContent();
-    } catch (e) {
-      Alert.alert("Error", "Folder name must be unique");
-    }
-  };
-
-  const handlePlayTrack = async (track: SQLiteService.MediaFile) => {
-    setCurrentTrack(track);
-
-    const queue = files.map(t => ({
-      id: t.id.toString(),
-      url: t.local_uri,
-      title: t.name,
-      artist: 'Sonic Library',
-    }));
-    const startIndex = files.findIndex(t => t.id === track.id);
-
-    await AudioPlayerService.loadPlaylist(queue, Math.max(startIndex, 0));
-    await AudioPlayerService.play();
-    setIsPlaying(true);
-    onShowPlayer();
-  };
-
-  const handleDeleteTrack = async (track: SQLiteService.MediaFile) => {
-    Alert.alert('Delete', `Delete "${track.name}"?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-          await SQLiteService.deleteFile(track.id);
-          await loadContent();
-      }},
-    ]);
-  };
-
-  const handleDragEnd = async ({ data }: { data: SQLiteService.MediaFile[] }) => {
-    setFiles(data);
-    const updates = data.map((track, index) => ({ id: track.id, sortOrder: index }));
-    await SQLiteService.updateMultipleFileSortOrders(updates);
-  };
-
-  const handleImportMP3 = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({ type: 'audio/mpeg', multiple: true });
-      if (!result.canceled && result.assets) {
-        for (const asset of result.assets) {
-          const newUri = `${FileSystem.documentDirectory}${asset.name}`;
-          await FileSystem.copyAsync({ from: asset.uri, to: newUri });
-          await SQLiteService.addFile(asset.name, newUri, currentFolderId);
-        }
-        await loadContent();
-      }
-    } catch (e) { Alert.alert("Error", "Import failed"); }
-  };
-
-  const handleDownloadYouTube = async () => {
-    if (!ytUrl.trim()) return;
-    setYtLoading(true);
-    setYtStatus('Connecting...');
-    try {
-      const infoRes = await fetch(`${BACKEND_URL}/info?url=${encodeURIComponent(ytUrl)}`);
-      if (!infoRes.ok) throw new Error('Invalid URL');
-      const info = await infoRes.json();
-      startDownload(info.title);
-      setShowYTModal(false);
-      
-      const fileName = `${info.title.replace(/[^\w]/g, '')}_${Date.now()}.mp3`;
-      const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-      const dr = FileSystem.createDownloadResumable(`${BACKEND_URL}/download?url=${encodeURIComponent(ytUrl)}`, fileUri, {}, (p) => {
-        if (p.totalBytesExpectedToWrite > 0) updateProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
+  // Back button leaves selection / reorder mode first.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (selecting) return setSelected(new Set()), true;
+        if (reordering) return setReordering(false), true;
+        return false;
       });
-      const res = await dr.downloadAsync();
-      if (res && res.status === 200) {
-        await SQLiteService.addFile(`${info.title}.mp3`, res.uri, currentFolderId);
-        await loadContent();
-        finishDownload();
-      }
-    } catch (e: any) { failDownload(e.message); }
-    finally { setYtLoading(false); }
+      return () => sub.remove();
+    }, [selecting, reordering]),
+  );
+
+  if (!f) return <View style={styles.root}><Header back /></View>;
+  const own = !f.shared;
+  const list = tracks.data ?? [];
+  const s = stats.data;
+
+  const toggleSelect = (itemId: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(itemId) ? next.delete(itemId) : next.add(itemId);
+      return next;
+    });
+
+  const tap = (i: number) => {
+    if (selecting) return toggleSelect(list[i].item_id);
+    if (list[i].id === current) return Player.toggle();
+    a.play(list, i, { title: f.name });
   };
 
-  const renderTrack = ({ item, drag, isActive }: RenderItemParams<SQLiteService.MediaFile>) => {
-    const isCurrent = currentTrack?.id === item.id;
-    return (
-      <ScaleDecorator>
-        <TouchableOpacity
-          onLongPress={drag}
-          disabled={isActive}
-          onPress={() => item.missing ? Alert.alert("Missing", "File not found") : handlePlayTrack(item)}
-          style={[s.trackItem, isActive && s.trackItemActive, isCurrent && s.trackItemCurrent, item.missing && s.trackItemMissing]}
-        >
-          <View style={[s.trackArt, item.missing && s.trackArtMissing]}>
-            <Text style={s.trackEmoji}>{item.missing ? '❓' : '🎵'}</Text>
-          </View>
-          <View style={s.trackInfo}>
-            <View style={s.trackHeaderRow}>
-              <Text style={[s.trackName, isCurrent && s.trackNameCurrent]} numberOfLines={1}>{item.name}</Text>
-              {item.missing && (
-                <View style={s.missingBadge}>
-                  <Text style={s.missingBadgeText}>MISSING</Text>
-                </View>
-              )}
-            </View>
-            <Text style={s.trackSub}>{isCurrent && isPlaying ? 'Playing' : 'Sonic Library'}</Text>
-          </View>
-          <TouchableOpacity onPressIn={drag} style={s.dragHandle}>
-            <GripVertical color="#64748b" size={20} />
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </ScaleDecorator>
-    );
-  };
+  const selectedItems = list.filter((t) => selected.has(t.item_id));
 
-  return (
-    <View style={[s.container, { paddingTop: Math.max(insets.top, 16) }]}>
-      <LinearGradient
-        colors={['#050510', '#000']}
-        style={StyleSheet.absoluteFill}
-      />
+  async function moveSelected() {
+    const target = await a.pickFolder({ title: `Move ${selected.size} song${selected.size === 1 ? '' : 's'} to`, excludeIds: [id] });
+    if (!target) return;
+    await moveItems([...selected], target);
+    setSelected(new Set());
+    a.toast('Moved');
+  }
 
-      {/* Header */}
-      <View style={s.header}>
-        <TouchableOpacity onPress={handleBack} style={s.backBtn}>
-          <ChevronLeft color="#fff" size={24} />
-        </TouchableOpacity>
-        <View style={s.headerTextContainer}>
-          <Text style={s.headerSub}>LIBRARY / FOLDER</Text>
-          <Text style={s.title}>{currentFolderName}</Text>
-        </View>
-        <TouchableOpacity style={s.backBtn}>
-          <MoreHorizontal color="#fff" size={20} />
-        </TouchableOpacity>
-      </View>
+  async function copySelected() {
+    const target = await a.pickFolder({ title: `Add ${selected.size} song${selected.size === 1 ? '' : 's'} to`, excludeIds: [id] });
+    if (!target) return;
+    const n = await copyTracks(selectedItems.map((t) => t.id), target);
+    setSelected(new Set());
+    a.toast(n ? `Added ${n} song${n === 1 ? '' : 's'}` : 'Already in that folder');
+  }
 
-      <View style={s.content}>
-        {/* Quick Actions */}
-        <View style={s.actionsRow}>
-          <TouchableOpacity onPress={() => setShowYTModal(true)} style={s.actionPill}>
-            <LinearGradient
-              colors={['#ef4444', '#b91c1c']}
-              style={StyleSheet.absoluteFill}
-              start={{x:0, y:0}} end={{x:1, y:0}}
-            />
-            <Youtube color="#fff" size={18} />
-            <Text style={s.actionText}>YouTube</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity onPress={handleImportMP3} style={s.actionPillSecondary}>
-            <MusicIcon color="#a78bfa" size={18} />
-            <Text style={s.actionTextSecondary}>Import</Text>
-          </TouchableOpacity>
+  async function removeSelected() {
+    if (!(await a.confirm({ title: `Remove ${selected.size} song${selected.size === 1 ? '' : 's'}?`, message: 'They are removed from this folder on all your devices.', confirm: 'Remove', danger: true })))
+      return;
+    await removeItems([...selected]);
+    setSelected(new Set());
+  }
 
-          <TouchableOpacity onPress={() => setShowAddSubfolder(true)} style={s.actionPillSecondary}>
-            <FolderPlus color="#a78bfa" size={18} />
-            <Text style={s.actionTextSecondary}>Subfolder</Text>
-          </TouchableOpacity>
-        </View>
+  function startReorder() {
+    setOrder(list);
+    setReordering(true);
+  }
 
-        {/* Subfolders Scroll */}
-        {subfolders.length > 0 && (
-          <View style={s.section}>
-            <Text style={s.sectionTitle}>Subfolders</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.folderScroll}>
-              {subfolders.map(folder => (
-                <TouchableOpacity key={folder.id} onPress={() => navigateToSubfolder(folder.id, folder.name)} style={s.folderItem}>
-                  <View style={s.folderArt}>
-                    <Text style={s.folderEmoji}>📁</Text>
-                  </View>
-                  <Text style={s.folderLabel} numberOfLines={1}>{folder.name}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+  async function saveOrder() {
+    await reorderItems(id, order.map((t) => t.item_id));
+    setReordering(false);
+    a.toast('Order saved');
+  }
+
+  const downloaded = s ? s.done : 0;
+  const total = s ? s.total : 0;
+
+  const header = (
+    <View>
+      <Animated.View entering={FadeInDown.springify().damping(16)} style={styles.hero}>
+        <Artwork seed={f.id} kind="folder" size={150} radius={36} style={styles.heroArt} />
+        <Text style={[type.h1, { textAlign: 'center' }]} numberOfLines={2}>
+          {f.name}
+        </Text>
+        <Text style={type.caption}>
+          {total} Songs{s?.ms ? `  |  ${formatTime(s.ms / 1000)} mins` : ''}
+        </Text>
+        {!!f.shared && (
+          <View style={styles.sharedBadge}>
+            <Users size={12} color={colors.brand} />
+            <Text style={[type.tiny, { color: colors.brand }]}>Shared with you</Text>
           </View>
         )}
-
-        {/* Tracks List */}
-        <View style={[s.section, { flex: 1 }]}>
-          <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>Tracks ({files.length})</Text>
-            {files.length > 0 && (
-              <TouchableOpacity style={s.playAllBtn}>
-                <Play color="#fff" size={12} fill="#fff" />
-                <Text style={s.playAllText}>Play All</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {loading ? (
-            <ActivityIndicator color="#7c3aed" style={{ marginTop: 40 }} />
-          ) : files.length === 0 ? (
-            <View style={s.emptyState}>
-              <View style={s.emptyIconBox}>
-                <MusicIcon color="#1e293b" size={40} />
+        <View style={styles.heroButtons}>
+          <Button title="Shuffle" icon={<Shuffle size={18} color="#fff" />} onPress={() => a.playFolder(f, true)} style={{ flex: 1 }} disabled={!total} />
+          <Button title="Play" variant="secondary" icon={<Play size={18} color={colors.brand} fill={colors.brand} />} onPress={() => a.playFolder(f)} style={{ flex: 1 }} disabled={!total} />
+        </View>
+        {total > 0 && (
+          <Pressable
+            style={styles.offline}
+            onPress={() => (f.auto_download ? a.folderMenu(f) : (DownloadManager.downloadFolder(f.id), a.toast('Downloading for offline')))}
+            accessibilityLabel={f.auto_download ? 'Offline settings' : 'Download for offline'}
+          >
+            <CloudDownload size={16} color={downloaded === total ? colors.ok : colors.brand} />
+            <Text style={[type.caption, { color: colors.text }]}>
+              {downloaded === total ? 'All songs available offline' : f.auto_download ? `Downloaded ${downloaded} of ${total}` : 'Download for offline'}
+            </Text>
+            {f.auto_download && downloaded < total && (
+              <View style={styles.progress}>
+                <View style={[styles.progressFill, { width: `${(downloaded / total) * 100}%` }]} />
               </View>
-              <Text style={s.emptyTitle}>Empty Folder</Text>
-              <Text style={s.emptySubtitle}>Start adding music via YouTube or Import</Text>
-            </View>
-          ) : (
-            <DraggableFlatList
-              data={files}
-              onDragEnd={handleDragEnd}
-              keyExtractor={(item) => item.id.toString()}
-              renderItem={renderTrack}
-              contentContainerStyle={{ paddingBottom: 150 }}
-              showsVerticalScrollIndicator={false}
-            />
+            )}
+          </Pressable>
+        )}
+      </Animated.View>
+
+      {!!subfolders.data?.length && (
+        <View style={{ marginTop: 8 }}>
+          <SectionHeader title="Folders" style={styles.pad} />
+          {subfolders.data.map((sf) => (
+            <FolderRow key={sf.id} folder={sf} onPress={() => navigate('Folder', { id: sf.id })} onMore={() => a.folderMenu(sf)} />
+          ))}
+        </View>
+      )}
+
+      <View style={[styles.songsHeader, styles.pad]}>
+        <Text style={type.h3}>Songs</Text>
+        <View style={{ flexDirection: 'row', gap: 16 }}>
+          {own && f.sort_mode === 'custom' && list.length > 1 && (
+            <Pressable onPress={startReorder} hitSlop={8}>
+              <Text style={type.link}>Edit order</Text>
+            </Pressable>
           )}
+          <Pressable onPress={() => a.chooseSort(f)} style={styles.sortBtn} hitSlop={8} accessibilityLabel={`Sort: ${SORT_LABELS[f.sort_mode]}`}>
+            <Text style={type.link}>{SORT_LABELS[f.sort_mode]}</Text>
+            <ArrowDownUp size={14} color={colors.brand} />
+          </Pressable>
         </View>
       </View>
+    </View>
+  );
 
-      {/* Modern Subfolder Modal */}
-      <Modal visible={showAddSubfolder} transparent animationType="slide">
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setShowAddSubfolder(false)} />
-          <View style={s.modalSheet}>
-            <View style={s.sheetHandle} />
-            <Text style={s.modalTitleSheet}>Create Subfolder</Text>
-            <Text style={s.modalSub}>Organizing inside "{currentFolderName}"</Text>
-            <TextInput
-              style={s.modalInput}
-              placeholder="Enter folder name..."
-              placeholderTextColor="#64748b"
-              value={newSubfolderName}
-              onChangeText={setNewSubfolderName}
-              autoFocus
-            />
-            <TouchableOpacity 
-              onPress={handleCreateSubfolder} 
-              style={[s.modalBtnAction, !newSubfolderName.trim() && { opacity: 0.5 }]}
-              disabled={!newSubfolderName.trim()}
-            >
-              <Text style={s.modalBtnTextAction}>Create Folder</Text>
-            </TouchableOpacity>
+  const empty = tracks.loading ? null : (
+    <Empty
+      icon={<SquarePlay size={28} color={colors.brand} />}
+      title={own ? 'Add your first songs' : 'No songs here yet'}
+      body={own ? 'Save from YouTube, import files from your phone, or move songs here from another folder.' : 'Your admin has not added music to this folder yet.'}
+      action={
+        own && (
+          <View style={{ gap: 10, marginTop: 12, alignSelf: 'stretch' }}>
+            <Button title="Add from YouTube" icon={<SquarePlay size={18} color="#fff" />} onPress={() => a.addFromYouTube(id)} />
+            <Button title="Import from phone" variant="secondary" icon={<Upload size={18} color={colors.text} />} onPress={() => a.importFiles(id)} />
+            <Button title="New subfolder" variant="ghost" icon={<FolderPlus size={18} color={colors.brand} />} onPress={() => a.newFolder(id)} />
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        )
+      }
+    />
+  );
 
-      {/* YT Modal */}
-      <Modal visible={showYTModal} transparent animationType="slide">
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setShowYTModal(false)} />
-          <View style={s.modalSheet}>
-            <View style={s.sheetHandle} />
-            <Text style={s.modalTitleSheet}>Download from YouTube</Text>
-            <Text style={s.modalSub}>Audio will be added to this folder</Text>
-            <TextInput
-              style={s.modalInput}
-              placeholder="Paste YouTube Link"
-              placeholderTextColor="#64748b"
-              value={ytUrl}
-              onChangeText={setYtUrl}
+  return (
+    <View style={styles.root}>
+      {selecting ? (
+        <View style={[styles.selectBar, { paddingTop: insets.top + 8 }]}>
+          <IconButton label="Cancel selection" onPress={() => setSelected(new Set())}>
+            <X size={22} color={colors.text} />
+          </IconButton>
+          <Text style={[type.h3, { flex: 1 }]}>{selected.size} selected</Text>
+          <Pressable onPress={() => setSelected(new Set(list.map((t) => t.item_id)))} hitSlop={8} style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+            <CheckCheck size={18} color={colors.brand} />
+            <Text style={type.link}>All</Text>
+          </Pressable>
+        </View>
+      ) : reordering ? (
+        <View style={[styles.selectBar, { paddingTop: insets.top + 8 }]}>
+          <IconButton label="Cancel" onPress={() => setReordering(false)}>
+            <X size={22} color={colors.text} />
+          </IconButton>
+          <Text style={[type.h3, { flex: 1 }]}>Drag to reorder</Text>
+          <Pressable onPress={saveOrder} hitSlop={8}>
+            <Text style={[type.link, { fontSize: 15 }]}>Done</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Header
+          back
+          right={
+            <IconButton label="Folder options" onPress={() => a.folderMenu(f, { onDeleted: () => nav.goBack() })}>
+              <EllipsisVertical size={22} color={colors.text} />
+            </IconButton>
+          }
+        />
+      )}
+
+      {reordering ? (
+        <DraggableFlatList
+          data={order}
+          keyExtractor={(t) => String(t.item_id)}
+          onDragEnd={({ data }) => setOrder(data)}
+          contentContainerStyle={{ paddingBottom: 120 }}
+          renderItem={({ item, drag, isActive }) => (
+            <ScaleDecorator activeScale={1.03}>
+              <SongRow
+                track={item}
+                onPress={() => {}}
+                onLongPress={drag}
+                selecting={false}
+                leading={
+                  <Pressable onPressIn={drag} hitSlop={10} accessibilityLabel="Drag handle">
+                    <GripVertical size={20} color={isActive ? colors.brand : colors.faint} />
+                  </Pressable>
+                }
+              />
+            </ScaleDecorator>
+          )}
+        />
+      ) : (
+        <FlatList
+          data={list}
+          keyExtractor={(t) => String(t.item_id)}
+          ListHeaderComponent={header}
+          ListEmptyComponent={empty}
+          contentContainerStyle={{ paddingBottom: selecting ? 140 : 170 }}
+          initialNumToRender={14}
+          renderItem={({ item, index }) => (
+            <SongRow
+              track={item}
+              isCurrent={item.id === current}
+              isPlaying={isPlaying}
+              selecting={selecting}
+              selected={selected.has(item.item_id)}
+              onPress={() => tap(index)}
+              onLongPress={own ? () => toggleSelect(item.item_id) : undefined}
+              onMore={() => a.songMenu(item, { itemId: item.item_id, folder: f })}
             />
-            {ytLoading && <Text style={s.ytStatus}>{ytStatus}</Text>}
-            <TouchableOpacity 
-              onPress={handleDownloadYouTube} 
-              style={[s.modalBtnAction, (!ytUrl.trim() || ytLoading) && { opacity: 0.5 }]}
-              disabled={!ytUrl.trim() || ytLoading}
-            >
-              {ytLoading ? <ActivityIndicator color="#fff" /> : <Text style={s.modalBtnTextAction}>Download Now</Text>}
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          )}
+        />
+      )}
+
+      <FloatingDock hidden={selecting || reordering} />
+      {selecting && (
+        <Animated.View entering={FadeInUp.springify().damping(18)} style={[styles.actionBar, { paddingBottom: insets.bottom + 12 }]}>
+          <BarAction icon={<FolderInput size={22} color={colors.text} />} label="Move" onPress={moveSelected} />
+          <BarAction icon={<Copy size={22} color={colors.text} />} label="Add to" onPress={copySelected} />
+          <BarAction icon={<Trash2 size={22} color={colors.danger} />} label="Remove" onPress={removeSelected} danger />
+        </Animated.View>
+      )}
     </View>
   );
 }
 
-const s = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    height: 70,
-  },
-  headerTextContainer: {
-    alignItems: 'center',
-  },
-  headerSub: {
-    color: '#64748b',
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 1,
-    marginBottom: 2,
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  title: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: 20,
-    marginTop: 10,
-  },
-  actionsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 25,
-  },
-  actionPill: {
-    flex: 1.2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 50,
-    borderRadius: 16,
-    gap: 8,
-    overflow: 'hidden',
-  },
-  actionPillSecondary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 50,
-    borderRadius: 16,
-    backgroundColor: 'rgba(167, 139, 250, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.15)',
-    gap: 8,
-  },
-  actionText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 13,
-  },
-  actionTextSecondary: {
-    color: '#a78bfa',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  section: {
-    marginBottom: 25,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 15,
-  },
-  sectionTitle: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '900',
-  },
-  playAllBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#7c3aed',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    gap: 6,
-  },
-  playAllText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  folderScroll: {
-    gap: 15,
-  },
-  folderItem: {
-    width: 80,
-    alignItems: 'center',
-  },
-  folderArt: {
-    width: 68,
-    height: 68,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  folderEmoji: {
-    fontSize: 26,
-  },
-  folderLabel: {
-    color: '#94a3b8',
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  trackItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    padding: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  trackItemActive: {
-    backgroundColor: 'rgba(124, 58, 237, 0.15)',
-    borderColor: 'rgba(124, 58, 237, 0.3)',
-  },
-  trackItemCurrent: {
-    borderColor: '#7c3aed',
-    backgroundColor: 'rgba(124, 58, 237, 0.08)',
-  },
-  trackItemMissing: {
-    opacity: 0.6,
-  },
-  trackArt: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  trackArtMissing: {
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-  },
-  trackEmoji: {
-    fontSize: 20,
-  },
-  trackInfo: {
-    flex: 1,
-    marginLeft: 14,
-  },
-  trackHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  trackName: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 16,
-    flexShrink: 1,
-  },
-  trackNameCurrent: {
-    color: '#a78bfa',
-  },
-  trackSub: {
-    color: '#64748b',
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  missingBadge: {
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 0.5,
-    borderColor: 'rgba(239, 68, 68, 0.2)',
-  },
-  missingBadgeText: {
-    color: '#ef4444',
-    fontSize: 8,
-    fontWeight: '900',
-  },
-  dragHandle: {
-    padding: 10,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 60,
-  },
-  emptyIconBox: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  emptyTitle: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: '900',
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    color: '#64748b',
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
-    paddingHorizontal: 40,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#0f0f1e',
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    padding: 24,
-    paddingBottom: 40,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
-  },
-  sheetHandle: {
-    width: 40,
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: 25,
-  },
-  modalTitleSheet: {
-    color: '#fff',
-    fontSize: 22,
-    fontWeight: '900',
-    marginBottom: 6,
-  },
-  modalSub: {
-    color: '#64748b',
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 25,
-  },
-  modalInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 16,
-    padding: 18,
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  modalBtnAction: {
-    backgroundColor: '#7c3aed',
-    height: 56,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#7c3aed',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  modalBtnTextAction: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 16,
-  },
-  ytStatus: {
-    color: '#a78bfa',
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 15,
-    textAlign: 'center',
-  },
-});
+function BarAction({ icon, label, onPress, danger }: { icon: React.ReactNode; label: string; onPress: () => void; danger?: boolean }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.barAction, pressed && { opacity: 0.6 }]} accessibilityRole="button">
+      {icon}
+      <Text style={[styles.barLabel, danger && { color: colors.danger }]}>{label}</Text>
+    </Pressable>
+  );
+}
 
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bg },
+  pad: { paddingHorizontal: 20 },
+  hero: { alignItems: 'center', paddingHorizontal: 24, paddingTop: 8, gap: 6 },
+  heroArt: { marginBottom: 14, shadowColor: colors.brand, shadowOpacity: 0.35, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 10 },
+  heroButtons: { flexDirection: 'row', gap: 14, alignSelf: 'stretch', marginTop: 16 },
+  sharedBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brandSoft, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginTop: 4 },
+  offline: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'stretch', marginTop: 14, backgroundColor: colors.surface, borderRadius: 14, padding: 12 },
+  progress: { flex: 1, height: 4, borderRadius: 2, backgroundColor: colors.line, overflow: 'hidden', marginLeft: 4 },
+  progressFill: { height: 4, backgroundColor: colors.brand },
+  songsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 24, marginBottom: 6 },
+  sortBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingBottom: 8, backgroundColor: colors.bg },
+  actionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+  },
+  barAction: { flex: 1, alignItems: 'center', gap: 4 },
+  barLabel: { fontFamily: font.medium, fontSize: 12, color: colors.text },
+});

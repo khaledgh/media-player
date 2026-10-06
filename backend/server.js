@@ -34,9 +34,19 @@ app.use(globalRateLimit);
 // Serve test UI
 app.use(express.static(path.join(__dirname, 'public')));
 
+// When INTERNAL_KEY is set, only callers that send it (the Go API server) may
+// use the YouTube endpoints. Leave it unset to keep the public API behaviour.
+const requireInternalKey = (req, res, next) => {
+  const key = process.env.INTERNAL_KEY;
+  if (key && req.get('X-Internal-Key') !== key) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+};
+
 // API Routes
-app.use('/info', infoRoute);
-app.use('/download', downloadRoute);
+app.use('/info', requireInternalKey, infoRoute);
+app.use('/download', requireInternalKey, downloadRoute);
 app.use('/cookies', cookiesRoute);
 
 // Health check

@@ -1,102 +1,94 @@
 import TrackPlayer, {
-  Event,
-  RepeatMode,
-  State,
-  Capability,
   AppKilledPlaybackBehavior,
-} from "react-native-track-player";
+  Capability,
+  Event,
+  IOSCategory,
+  IOSCategoryMode,
+  RepeatMode,
+} from 'react-native-track-player';
 
-// Playback service - handles remote control events from notification/lock screen
+export const JUMP_SECONDS = 10;
+
+/**
+ * Runs in the background (Android headless task / iOS audio session) and
+ * answers lock-screen, notification, headset and car controls.
+ */
 export default async function playbackService() {
-  console.log('[PlaybackService] Background task started');
-
-  TrackPlayer.addEventListener(Event.RemotePause, async () => {
-    console.warn('[PlaybackService] Remote Pause event received');
-    await TrackPlayer.pause();
-  });
-  
-  TrackPlayer.addEventListener(Event.RemotePlay, async () => {
-    console.warn('[PlaybackService] Remote Play event received');
-    await TrackPlayer.play();
-  });
-  
-  TrackPlayer.addEventListener(Event.RemoteNext, async () => {
-    console.log('[PlaybackService] Remote Next event received');
-    await TrackPlayer.skipToNext();
-  });
-  
-  TrackPlayer.addEventListener(Event.RemotePrevious, async () => {
-    console.log('[PlaybackService] Remote Previous event received');
-    await TrackPlayer.skipToPrevious();
-  });
-  
+  TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
+  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
   TrackPlayer.addEventListener(Event.RemoteStop, async () => {
-    console.log('[PlaybackService] Remote Stop event received');
     await TrackPlayer.pause();
-    await TrackPlayer.reset();
+    await TrackPlayer.seekTo(0);
   });
-  
-  TrackPlayer.addEventListener(Event.RemoteSeek, async (event) => {
-    console.log('[PlaybackService] Remote Seek event received:', event.position);
-    await TrackPlayer.seekTo(event.position);
+  TrackPlayer.addEventListener(Event.RemoteNext, () => TrackPlayer.skipToNext().catch(() => {}));
+  TrackPlayer.addEventListener(Event.RemotePrevious, async () => {
+    // Like most players: restart the song unless we are at its very beginning.
+    const { position } = await TrackPlayer.getProgress();
+    if (position > 3) await TrackPlayer.seekTo(0);
+    else await TrackPlayer.skipToPrevious().catch(() => TrackPlayer.seekTo(0));
   });
-
-  TrackPlayer.addEventListener(Event.PlaybackError, (error) => {
-    console.error('[PlaybackService] Playback Error:', error);
+  TrackPlayer.addEventListener(Event.RemoteSeek, (e) => TrackPlayer.seekTo(e.position));
+  TrackPlayer.addEventListener(Event.RemoteJumpForward, (e) => TrackPlayer.seekBy(e.interval ?? JUMP_SECONDS));
+  TrackPlayer.addEventListener(Event.RemoteJumpBackward, (e) => TrackPlayer.seekBy(-(e.interval ?? JUMP_SECONDS)));
+  TrackPlayer.addEventListener(Event.RemoteDuck, async (e) => {
+    if (e.permanent) await TrackPlayer.pause();
   });
-
-  TrackPlayer.addEventListener(Event.PlaybackState, (event) => {
-    console.log('[PlaybackService] State changed to:', event.state);
+  TrackPlayer.addEventListener(Event.RemoteLike, async () => {
+    // Lazy import: the library DB lives in the app context and may not be open here.
+    const { toggleLikeFromRemote } = await import('./PlayerService');
+    await toggleLikeFromRemote();
   });
-};
+}
 
-export const setupPlayer = async () => {
-  let isSetup = false;
-  try {
-    // Check if already initialized - getPlaybackState is safer than getActiveTrackIndex
-    await TrackPlayer.getPlaybackState();
-    isSetup = true;
-    console.log('[PlaybackService] Player already setup');
-  } catch {
-    console.log('[PlaybackService] Setting up player for the first time');
-    await TrackPlayer.setupPlayer({
-      autoHandleInterruptions: true,
-    });
-    isSetup = true;
-  }
+let ready: Promise<void> | null = null;
 
-  if (isSetup) {
+export function setupPlayer(): Promise<void> {
+  ready ??= (async () => {
+    try {
+      await TrackPlayer.setupPlayer({
+        autoHandleInterruptions: true,
+        iosCategory: IOSCategory.Playback,
+        iosCategoryMode: IOSCategoryMode.Default,
+      });
+    } catch (e) {
+      // Already initialised (e.g. after a JS reload) is fine.
+      if (!String(e).includes('already been initialized')) throw e;
+    }
     await TrackPlayer.updateOptions({
       android: {
-        // Use ContinuePlayback to be more sticky on Android
         appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
         alwaysPauseOnInterruption: true,
-        // Ensure notification is visible
-        showProgress: true,
       },
+      icon: require('../../assets/notification-icon.png'),
+      color: 0xffff8216,
+      forwardJumpInterval: JUMP_SECONDS,
+      backwardJumpInterval: JUMP_SECONDS,
+      progressUpdateEventInterval: 1,
       capabilities: [
         Capability.Play,
         Capability.Pause,
         Capability.SkipToNext,
         Capability.SkipToPrevious,
-        Capability.Stop,
         Capability.SeekTo,
-      ],
-      compactCapabilities: [
-        Capability.Play,
-        Capability.Pause,
-        Capability.SkipToNext,
+        Capability.JumpForward,
+        Capability.JumpBackward,
+        Capability.Stop,
       ],
       notificationCapabilities: [
         Capability.Play,
         Capability.Pause,
-        Capability.SkipToNext,
         Capability.SkipToPrevious,
-        Capability.Stop,
+        Capability.SkipToNext,
+        Capability.JumpBackward,
+        Capability.JumpForward,
+        Capability.SeekTo,
       ],
+      compactCapabilities: [Capability.SkipToPrevious, Capability.Play, Capability.Pause, Capability.SkipToNext],
     });
     await TrackPlayer.setRepeatMode(RepeatMode.Queue);
-  }
-
-  return isSetup;
-};
+  })().catch((e) => {
+    ready = null;
+    throw e;
+  });
+  return ready;
+}
