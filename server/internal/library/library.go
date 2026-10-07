@@ -286,38 +286,73 @@ func (l *Library) EnsureChildFolder(ctx context.Context, parent int64, name stri
 }
 
 // IsDescendant reports whether candidate is folder or lies inside folder's subtree.
+// It walks up from candidate, so it needs no recursive SQL (MySQL < 8.0 has none).
 func (l *Library) IsDescendant(ctx context.Context, ex db.Execer, folder, candidate int64) (bool, error) {
-	var n int
-	err := ex.QueryRowContext(ctx, `
-		WITH RECURSIVE sub AS (
-			SELECT id FROM folders WHERE id = ?
-			UNION ALL
-			SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
-		) SELECT COUNT(*) FROM sub WHERE id = ?`, folder, candidate).Scan(&n)
-	return n > 0, err
+	cur := candidate
+	for depth := 0; depth < 1000; depth++ {
+		if cur == folder {
+			return true, nil
+		}
+		var parent sql.NullInt64
+		err := ex.QueryRowContext(ctx, `SELECT parent_id FROM folders WHERE id = ?`, cur).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && !parent.Valid) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		cur = parent.Int64
+	}
+	return false, nil
+}
+
+// expandSubtrees returns roots plus all their descendants, one level per query.
+// With liveOnly, deleted descendants (and their subtrees) are skipped.
+func expandSubtrees(ctx context.Context, ex db.Execer, roots []int64, liveOnly bool) ([]int64, error) {
+	seen := make(map[int64]bool, len(roots))
+	all := []int64{}
+	level := []int64{}
+	for _, id := range roots {
+		if !seen[id] {
+			seen[id] = true
+			all = append(all, id)
+			level = append(level, id)
+		}
+	}
+	for len(level) > 0 {
+		in, args := inList(level)
+		q := `SELECT id FROM folders WHERE parent_id IN (` + in + `)`
+		if liveOnly {
+			q += ` AND deleted_at IS NULL`
+		}
+		rows, err := ex.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		level = level[:0:0]
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if !seen[id] {
+				seen[id] = true
+				all = append(all, id)
+				level = append(level, id)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return all, nil
 }
 
 // SubtreeIDs returns folder id and all of its descendants (live or deleted).
 func (l *Library) SubtreeIDs(ctx context.Context, ex db.Execer, id int64) ([]int64, error) {
-	rows, err := ex.QueryContext(ctx, `
-		WITH RECURSIVE sub AS (
-			SELECT id FROM folders WHERE id = ?
-			UNION ALL
-			SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
-		) SELECT id FROM sub`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		ids = append(ids, v)
-	}
-	return ids, rows.Err()
+	return expandSubtrees(ctx, ex, []int64{id}, false)
 }
 
 func inList(ids []int64) (string, []any) {
@@ -413,46 +448,57 @@ func (l *Library) ReorderItems(ctx context.Context, ex db.Execer, folderID int64
 
 // ---------- visibility ----------
 
-// visibleFoldersCTE expands to the ids of all live folders a user can see:
-// their own folders plus every admin folder (and subtree) granted to them
-// directly or through a group. Takes the user id three times.
-const visibleFoldersCTE = `WITH RECURSIVE roots AS (
+// VisibleFolderIDs returns the ids of all live folders a user can see: their own
+// folders plus every admin folder (and subtree) granted to them directly or
+// through a group.
+func (l *Library) VisibleFolderIDs(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := l.DB.QueryContext(ctx, `
 		SELECT f.id FROM folders f
 		WHERE f.deleted_at IS NULL AND (
 			f.owner_user_id = ?
 			OR f.id IN (
 				SELECT fa.folder_id FROM folder_access fa
 				WHERE fa.user_id = ?
-				   OR fa.group_id IN (SELECT group_id FROM user_group_members WHERE user_id = ?)))
-	), visible AS (
-		SELECT id FROM roots
-		UNION
-		SELECT f.id FROM folders f JOIN visible v ON f.parent_id = v.id WHERE f.deleted_at IS NULL
-	)`
-
-func (l *Library) VisibleFolderIDs(ctx context.Context, userID int64) ([]int64, error) {
-	rows, err := l.DB.QueryContext(ctx, visibleFoldersCTE+` SELECT id FROM visible`, userID, userID, userID)
+				   OR fa.group_id IN (SELECT group_id FROM user_group_members WHERE user_id = ?)))`,
+		userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	ids := []int64{}
+	roots := []int64{}
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		ids = append(ids, id)
+		roots = append(roots, id)
 	}
-	return ids, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return expandSubtrees(ctx, l.DB, roots, true)
+}
+
+// inClause renders ids as a parenthesised IN list; an empty list matches nothing.
+func inClause(ids []int64) (string, []any) {
+	if len(ids) == 0 {
+		return "(NULL)", nil
+	}
+	in, args := inList(ids)
+	return "(" + in + ")", args
 }
 
 // CanSeeTrack reports whether a track lives in any folder visible to the user.
 func (l *Library) CanSeeTrack(ctx context.Context, userID, trackID int64) (bool, error) {
+	ids, err := l.VisibleFolderIDs(ctx, userID)
+	if err != nil || len(ids) == 0 {
+		return false, err
+	}
+	in, args := inClause(ids)
 	var n int
-	err := l.DB.QueryRowContext(ctx, visibleFoldersCTE+`
-		SELECT COUNT(*) FROM folder_tracks ft JOIN visible v ON v.id = ft.folder_id WHERE ft.track_id = ?`,
-		userID, userID, userID, trackID).Scan(&n)
+	err = l.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM folder_tracks WHERE track_id = ? AND folder_id IN `+in,
+		append([]any{trackID}, args...)...).Scan(&n)
 	return n > 0, err
 }
 

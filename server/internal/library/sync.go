@@ -47,10 +47,11 @@ func (l *Library) Pull(ctx context.Context, userID, since int64) (*PullResult, e
 	res.VisibleFolderIDs = ids
 
 	// Own folders including tombstones, plus live shared folders.
-	rows, err := l.DB.QueryContext(ctx, visibleFoldersCTE+`
+	vin, vargs := inClause(ids)
+	rows, err := l.DB.QueryContext(ctx, `
 		SELECT `+folderCols+` FROM folders
-		WHERE rev > ? AND rev <= ? AND (owner_user_id = ? OR id IN (SELECT id FROM visible))`,
-		userID, userID, userID, since, res.Cursor, userID)
+		WHERE rev > ? AND rev <= ? AND (owner_user_id = ? OR id IN `+vin+`)`,
+		append([]any{since, res.Cursor, userID}, vargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -67,11 +68,11 @@ func (l *Library) Pull(ctx context.Context, userID, since int64) (*PullResult, e
 		return nil, err
 	}
 
-	rows, err = l.DB.QueryContext(ctx, visibleFoldersCTE+`
+	rows, err = l.DB.QueryContext(ctx, `
 		SELECT ft.id, ft.folder_id, ft.track_id, ft.sort_order, ft.rev, ft.added_at, ft.updated_at, ft.deleted_at IS NOT NULL
 		FROM folder_tracks ft JOIN folders f ON f.id = ft.folder_id
-		WHERE ft.rev > ? AND ft.rev <= ? AND (f.owner_user_id = ? OR ft.folder_id IN (SELECT id FROM visible))`,
-		userID, userID, userID, since, res.Cursor, userID)
+		WHERE ft.rev > ? AND ft.rev <= ? AND (f.owner_user_id = ? OR ft.folder_id IN `+vin+`)`,
+		append([]any{since, res.Cursor, userID}, vargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -91,14 +92,14 @@ func (l *Library) Pull(ctx context.Context, userID, since int64) (*PullResult, e
 	}
 
 	// Tracks referenced by changed items, plus visible tracks whose metadata changed.
-	rows, err = l.DB.QueryContext(ctx, visibleFoldersCTE+`
+	rows, err = l.DB.QueryContext(ctx, `
 		SELECT t.id, t.title, t.artist, t.album, t.duration_ms, t.size_bytes, t.mime, t.cover_key IS NOT NULL, t.source, COALESCE(t.source_url, ''), t.rev
 		FROM tracks t
 		WHERE t.id IN (
 			SELECT ft.track_id FROM folder_tracks ft
-			WHERE ft.deleted_at IS NULL AND ft.folder_id IN (SELECT id FROM visible)
+			WHERE ft.deleted_at IS NULL AND ft.folder_id IN `+vin+`
 			  AND (ft.rev > ? OR t.rev > ?))`,
-		userID, userID, userID, since, since)
+		append(append([]any{}, vargs...), since, since)...)
 	if err != nil {
 		return nil, err
 	}

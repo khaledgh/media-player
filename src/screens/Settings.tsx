@@ -54,7 +54,12 @@ export default function Settings() {
   }
 
   async function signOut() {
-    if (await o.confirm({ title: 'Sign out?', message: 'Your downloads stay on this device for when you sign in again.', confirm: 'Sign out' })) await logout();
+    console.log('[settings] sign out tapped');
+    if (!(await o.confirm({ title: 'Sign out?', message: 'Your downloads stay on this device for when you sign in again.', confirm: 'Sign out' }))) return;
+    // Signing out unmounts the overlays; let the confirm sheet finish closing first
+    // or Android leaves the dismissing Modal stuck over the login screen.
+    await new Promise((r) => setTimeout(r, 400));
+    await logout();
   }
 
   const lastSync = sync.lastSyncAt ? new Date(sync.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'never';

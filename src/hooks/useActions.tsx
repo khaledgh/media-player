@@ -19,6 +19,7 @@ import {
 } from '../data/library';
 import type { Folder, SortMode, Track } from '../data/library';
 import { colors } from '../theme';
+import { navigate } from '../navigation/ref';
 
 export function useActions() {
   const o = useOverlays();
@@ -27,6 +28,7 @@ export function useActions() {
     async (tracks: Track[], index = 0, opts: { shuffle?: boolean; title?: string } = {}) => {
       try {
         await Player.playList(tracks, index, opts);
+        navigate('Player');
       } catch (e) {
         o.toast(e instanceof Error ? e.message : String(e));
       }

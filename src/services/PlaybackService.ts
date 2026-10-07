@@ -60,7 +60,7 @@ export function setupPlayer(): Promise<void> {
         alwaysPauseOnInterruption: true,
       },
       icon: require('../../assets/notification-icon.png'),
-      color: 0xffff8216,
+      color: 0xffff8216 | 0, // ARGB as a signed 32-bit int, as Android expects
       forwardJumpInterval: JUMP_SECONDS,
       backwardJumpInterval: JUMP_SECONDS,
       progressUpdateEventInterval: 1,

@@ -23,12 +23,19 @@ async function startServices(user: ApiUser) {
   YouTubeService.init();
 }
 
+// Best-effort: one failing or hanging step must never block signing out.
+const attempt = (fn: () => unknown, ms = 3000) =>
+  Promise.race([Promise.resolve().then(fn), new Promise((r) => setTimeout(r, ms))]).catch((e) => console.warn('[session] teardown step failed', e));
+
+// Teardown that is still running after the UI has already switched to signed-out.
+let stopping: Promise<void> = Promise.resolve();
+
 async function stopServices() {
-  SyncService.stop();
-  YouTubeService.stop();
-  await DownloadManager.cancelAll();
-  await TrackPlayer.reset().catch(() => {});
-  await closeUserDb();
+  await attempt(() => SyncService.stop());
+  await attempt(() => YouTubeService.stop());
+  await attempt(() => DownloadManager.cancelAll());
+  await attempt(() => TrackPlayer.reset());
+  await attempt(() => closeUserDb());
 }
 
 export const useSession = create<SessionState>((set) => ({
@@ -49,13 +56,17 @@ export const useSession = create<SessionState>((set) => ({
   login: async (server, email, password) => {
     const device = `${Platform.OS === 'ios' ? 'iPhone' : 'Android'} ${Platform.Version}`;
     const user = await api.login(server, email, password, device);
+    await stopping;
     await startServices(user);
     set({ status: 'ready', user });
   },
 
   logout: async () => {
-    await stopServices();
-    await api.logout();
+    console.log('[session] signing out');
+    // Switch the UI first so no mounted screen queries a closing database.
     set({ status: 'signedOut', user: null });
+    stopping = stopServices().then(() => attempt(() => api.logout()).then(() => {}));
+    await stopping;
+    console.log('[session] signed out');
   },
 }));

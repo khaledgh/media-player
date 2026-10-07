@@ -25,7 +25,7 @@ export class OfflineError extends Error {}
 
 const SESSION_KEY = 'mume.session';
 const SERVER_KEY = 'mume.server';
-export const DEFAULT_SERVER = 'http://10.0.2.2:8080'; // Android emulator → host machine
+export const DEFAULT_SERVER = 'https://mume-api.linksbridge.top';
 
 let session: Session | null = null;
 let onSignedOut: (() => void) | null = null;
@@ -164,6 +164,7 @@ async function authed<T>(method: string, path: string, body?: unknown): Promise<
     if (e instanceof ApiError && e.status === 401 && (await refresh()) && session) {
       return request<T>(session.server, method, path, body, session.accessToken);
     }
+    if (e instanceof ApiError && e.status >= 500) console.warn(`[api] ${method} ${path} -> ${e.status} ${e.message}`);
     throw e;
   }
 }

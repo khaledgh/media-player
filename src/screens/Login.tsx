@@ -94,7 +94,7 @@ export default function Login() {
               <TextInput
                 value={server}
                 onChangeText={setServer}
-                placeholder="https://music.example.com"
+                placeholder="https://mume-api.linksbridge.top"
                 placeholderTextColor={colors.faint}
                 style={styles.input}
                 autoCapitalize="none"

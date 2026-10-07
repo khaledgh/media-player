@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -40,7 +40,7 @@ export function Sheet({ visible, onClose, children }: { visible: boolean; onClos
   const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheetWrap}>
+      <KeyboardAvoidingView behavior="padding" style={styles.sheetWrap}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
         <Animated.View entering={SlideInDown.springify().damping(20).stiffness(180)} style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.handle} />
@@ -95,6 +95,14 @@ export function useOverlays() {
 
 type Pending<T> = { resolve: (v: T) => void } | null;
 
+// Android drops a Modal that opens while another is still closing, so sheets
+// opened right after one closes wait for its fade-out to finish.
+let lastClosedAt = 0;
+const markClosed = () => {
+  lastClosedAt = Date.now();
+};
+const afterPreviousSheet = () => new Promise<void>((r) => setTimeout(r, Math.max(0, 350 - (Date.now() - lastClosedAt))));
+
 export function OverlayProvider({ children }: { children: React.ReactNode }) {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -116,7 +124,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
   const chooseP = useRef<Pending<string | null>>(null);
 
   const [actionState, setActions] = useState<{ title: string; subtitle?: string; header?: React.ReactNode; items: ActionItem[] } | null>(null);
-  const actions = useCallback<Overlays['actions']>((o) => setActions(o), []);
+  const actions = useCallback<Overlays['actions']>((o) => void afterPreviousSheet().then(() => setActions(o)), []);
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -128,7 +136,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
     (o) =>
       new Promise((resolve) => {
         confirmP.current = { resolve };
-        setConfirm(o);
+        afterPreviousSheet().then(() => setConfirm(o));
       }),
     [],
   );
@@ -138,7 +146,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
       new Promise((resolve) => {
         promptP.current = { resolve };
         setPromptValue(o.initial ?? '');
-        setPrompt(o);
+        afterPreviousSheet().then(() => setPrompt(o));
       }),
     [],
   );
@@ -148,6 +156,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
       new Promise(async (resolve) => {
         pickP.current = { resolve };
         const folders = (await getAllFolders()).filter((f) => !f.shared);
+        await afterPreviousSheet();
         setPick({ ...o, folders });
       }),
     [],
@@ -157,13 +166,16 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
     (o: { title: string; options: { value: string; label: string }[]; selected?: string }) =>
       new Promise<string | null>((resolve) => {
         chooseP.current = { resolve };
-        setChoose(o);
+        afterPreviousSheet().then(() => setChoose(o));
       }),
     [],
   ) as Overlays['choose'];
 
   const songMenu = useCallback((track: Track, ctx: SongMenuContext = {}) => {
-    isFavorite(track.id).then((fav) => setMenu({ track, ctx, fav }));
+    isFavorite(track.id).then(async (fav) => {
+      await afterPreviousSheet();
+      setMenu({ track, ctx, fav });
+    });
   }, []);
 
   const value = useMemo(() => ({ toast, confirm, prompt, pickFolder, songMenu, choose, actions }), [toast, confirm, prompt, pickFolder, songMenu, choose, actions]);
@@ -172,21 +184,25 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
     confirmP.current?.resolve(v);
     confirmP.current = null;
     setConfirm(null);
+    markClosed();
   };
   const closePrompt = (v: string | null) => {
     promptP.current?.resolve(v);
     promptP.current = null;
     setPrompt(null);
+    markClosed();
   };
   const closePick = (v: number | null | undefined) => {
     pickP.current?.resolve(v);
     pickP.current = null;
     setPick(null);
+    markClosed();
   };
   const closeChoose = (v: string | null) => {
     chooseP.current?.resolve(v);
     chooseP.current = null;
     setChoose(null);
+    markClosed();
   };
 
   // Folder list shown as an indented tree.
@@ -209,6 +225,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
 
   const runMenu = (fn: () => Promise<unknown> | void) => async () => {
     setMenu(null);
+    markClosed();
     try {
       await fn();
     } catch (e) {
@@ -343,6 +360,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
                   danger={it.danger}
                   onPress={async () => {
                     setActions(null);
+                    markClosed();
                     try {
                       await it.onPress();
                     } catch (e) {
@@ -395,6 +413,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
                   const pending = pickP.current;
                   pickP.current = null;
                   setPick(null);
+                  markClosed();
                   const name = await prompt({ title: 'New folder', placeholder: 'Folder name', confirm: 'Create' });
                   let id: number | undefined;
                   if (name) {
