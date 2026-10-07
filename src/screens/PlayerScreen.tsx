@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
 import TrackPlayer, { useProgress } from 'react-native-track-player';
 import type { Track as RNTrack } from 'react-native-track-player';
-import Animated, { FadeIn, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   ChevronDown,
@@ -50,7 +50,7 @@ export default function PlayerScreen() {
   // Gentle "breathing" of the artwork while playing.
   const scale = useSharedValue(1);
   useEffect(() => {
-    scale.value = withSpring(isPlaying ? 1 : 0.92, { damping: 14 });
+    scale.value = withTiming(isPlaying ? 1 : 0.96, { duration: 150 });
   }, [isPlaying, scale]);
   const artStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
@@ -99,7 +99,7 @@ export default function PlayerScreen() {
       </View>
 
       <View style={styles.center}>
-        <Animated.View entering={FadeIn.duration(300)} style={[styles.artShadow, artStyle]}>
+        <Animated.View style={[styles.artShadow, artStyle]}>
           <Artwork seed={current.remote_id ?? current.id} coverFile={current.cover_file} size={ART} radius={32} />
         </Animated.View>
       </View>

@@ -114,6 +114,7 @@ class DownloadManager {
   private async download(t: { id: number; remote_id: number; title: string; mime: string; has_cover: number }) {
     const db = getDb();
     await db.runAsync(`UPDATE tracks SET download_state = 'downloading' WHERE id = ?`, [t.id]);
+    libraryEvents.emit();
     useDownloadStatus.setState((s) => ({ active: [...s.active, { trackId: t.id, title: t.title, progress: 0 }] }));
 
     const urls = await api.get<{ url: string; cover_url?: string }>(`/tracks/${t.remote_id}/url`);

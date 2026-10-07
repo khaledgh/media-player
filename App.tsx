@@ -95,13 +95,13 @@ export default function App() {
       ) : (
         <OverlayProvider>
           <NavigationContainer ref={navigationRef} theme={theme}>
-            <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, animation: 'slide_from_right' }}>
+            <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, animation: 'slide_from_right', animationDuration: 200 }}>
               <Stack.Screen name="Tabs" component={TabsScreen} />
               <Stack.Screen name="Folder" component={FolderDetail} />
               <Stack.Screen name="Collection" component={Collection} />
               <Stack.Screen name="Songs" component={SongList} />
               <Stack.Screen name="Search" component={Search} options={{ animation: 'fade' }} />
-              <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'slide_from_bottom', presentation: 'fullScreenModal', gestureEnabled: true }} />
+              <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'fade', animationDuration: 150, presentation: 'fullScreenModal', gestureEnabled: true }} />
             </Stack.Navigator>
           </NavigationContainer>
         </OverlayProvider>

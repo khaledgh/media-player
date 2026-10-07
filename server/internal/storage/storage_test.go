@@ -17,6 +17,8 @@ func TestNormalizeCustomDomain(t *testing.T) {
 		{"media.example.com/", "https://media.example.com"},
 		{"https://media.example.com", "https://media.example.com"},
 		{"https://media.example.com/", "https://media.example.com"},
+		{"https://cdn.example.com# e.g. https://media.example.com (or pub-xxx.r2.dev)", "https://cdn.example.com"},
+		{"https://cdn.example.com # note", "https://cdn.example.com"},
 		{"http://localhost:9000", "http://localhost:9000"},
 		{"http://localhost:9000/", "http://localhost:9000"},
 		{"https://cdn.example.com/assets/", "https://cdn.example.com/assets"},

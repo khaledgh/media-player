@@ -173,6 +173,8 @@ func loadDotEnv(paths ...string) {
 			val := strings.TrimSpace(parts[1])
 			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
 				val = val[1 : len(val)-1]
+			} else if i := strings.Index(val, " #"); i >= 0 {
+				val = strings.TrimSpace(val[:i]) // inline comment
 			}
 			if _, exists := os.LookupEnv(key); !exists {
 				_ = os.Setenv(key, val)

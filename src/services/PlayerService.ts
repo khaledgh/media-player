@@ -69,6 +69,16 @@ function shuffled<T>(list: T[]): T[] {
 
 let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 let listenersReady = false;
+let playToken = 0; // bumped by every playList so an older background fill stops
+let errorStreak = 0;
+const retried = new Set<string>(); // tracks whose stream link was already re-fetched after an error
+
+async function isActivelyPlaying(state?: State): Promise<boolean> {
+  const st = state ?? (await TrackPlayer.getPlaybackState()).state;
+  if (st === State.Playing) return true;
+  if (st === State.Buffering || st === State.Loading) return TrackPlayer.getPlayWhenReady();
+  return false;
+}
 
 class PlayerService {
   async init() {
@@ -82,13 +92,62 @@ class PlayerService {
       usePlayer.setState({ current: t, isFavorite: t ? await isFavorite(t.id) : false });
       if (t) recordPlay(t.id).catch(() => {});
     });
-    TrackPlayer.addEventListener(Event.PlaybackState, (e) => usePlayer.setState({ isPlaying: e.state === State.Playing }));
+    // "Playing" means the user wants sound: it stays true while buffering or loading,
+    // so the button does not flicker and a tap during buffering pauses.
+    TrackPlayer.addEventListener(Event.PlaybackState, async (e) => {
+      if (e.state === State.Playing) errorStreak = 0;
+      usePlayer.setState({ isPlaying: await isActivelyPlaying(e.state) });
+    });
+    TrackPlayer.addEventListener(Event.PlaybackPlayWhenReadyChanged, async () => {
+      usePlayer.setState({ isPlaying: await isActivelyPlaying() });
+    });
     TrackPlayer.addEventListener(Event.PlaybackError, (e) => {
       console.warn('[player] error', e);
-      TrackPlayer.skipToNext().catch(() => {});
+      this.recover();
     });
+    await this.resync();
     // Keep lock-screen metadata fresh when sync updates titles or a cover finishes downloading.
     libraryEvents.subscribe(() => this.refreshCurrent());
+  }
+
+  /** Picks up playback that kept running in the background while the app was closed. */
+  private async resync() {
+    if (!hasDb()) return;
+    const active = await TrackPlayer.getActiveTrack().catch(() => undefined);
+    if (!active) return;
+    const t = await getTrack(Number(active.id));
+    usePlayer.setState({ current: t, isFavorite: t ? await isFavorite(t.id) : false, isPlaying: await isActivelyPlaying() });
+  }
+
+  /**
+   * A track failed to play. First retry once with a fresh stream link (links expire);
+   * otherwise move on, but give up after a few failures in a row instead of looping.
+   */
+  private async recover() {
+    try {
+      const idx = await TrackPlayer.getActiveTrackIndex();
+      const active = await TrackPlayer.getActiveTrack();
+      if (idx === undefined || !active) return;
+      if (!retried.has(active.id)) {
+        retried.add(active.id);
+        const t = await getTrack(Number(active.id));
+        const url = t && (await urlFor(t));
+        if (t && url && url !== active.url) {
+          await TrackPlayer.add(toRN(t, url), idx + 1);
+          await TrackPlayer.remove(idx);
+          await TrackPlayer.play();
+          return;
+        }
+      }
+      if (++errorStreak >= 3) {
+        errorStreak = 0;
+        await TrackPlayer.pause();
+        return;
+      }
+      await TrackPlayer.skipToNext();
+    } catch {
+      // end of queue or player gone: nothing more to do
+    }
   }
 
   private async refreshCurrent() {
@@ -113,35 +172,50 @@ class PlayerService {
     if (!tracks.length) return;
     const shuffle = opts.shuffle ?? false;
     const first = tracks[Math.min(startIndex, tracks.length - 1)];
-    const rest = tracks.filter((_, i) => i !== startIndex);
+    const rest = tracks.filter((t) => t.id !== first.id);
     const order = shuffle ? [first, ...shuffled(rest)] : tracks;
 
     const firstUrl = await urlFor(first);
     if (!firstUrl) throw new Error(`"${first.title}" is not downloaded yet and you are offline.`);
 
-    // Local files are instant; stream links for the rest are fetched in the background.
-    const queue: RNTrack[] = [];
-    const later: Track[] = [];
-    for (const t of order) {
-      if (t.id === first.id) queue.push(toRN(t, firstUrl));
-      else if (t.download_state === 'done' && trackUri(t)) queue.push(toRN(t, trackUri(t)!));
-      else if (t.remote_id) later.push(t);
-    }
+    const token = ++playToken;
+    errorStreak = 0;
+    retried.clear();
     await TrackPlayer.reset();
-    await TrackPlayer.add(queue);
-    const idx = queue.findIndex((q) => q.id === String(first.id));
-    if (idx > 0) await TrackPlayer.skip(idx);
+    await TrackPlayer.add(toRN(first, firstUrl));
     await TrackPlayer.setRate(usePlayer.getState().rate);
     await TrackPlayer.play();
     usePlayer.setState({ shuffle, queueTitle: opts.title ?? '' });
-    this.appendStreams(later);
+
+    const at = order.findIndex((t) => t.id === first.id);
+    this.fillQueue(order.slice(at + 1), order.slice(0, at), token);
   }
 
-  private async appendStreams(tracks: Track[]) {
-    for (const t of tracks) {
-      const url = await urlFor(t);
-      if (!url) return; // offline: stop trying
-      await TrackPlayer.add(toRN(t, url)).catch(() => {});
+  /**
+   * Adds the rest of the list around the song that is already playing, keeping the
+   * original order: later songs are appended, earlier ones inserted before it.
+   * Stream links are fetched a few at a time; songs that cannot be resolved are skipped.
+   */
+  private async fillQueue(after: Track[], before: Track[], token: number) {
+    const resolve = async (list: Track[]) => {
+      const out: RNTrack[] = [];
+      for (let i = 0; i < list.length; i += 6) {
+        const urls = await Promise.all(list.slice(i, i + 6).map((t) => urlFor(t)));
+        if (token !== playToken) return null;
+        list.slice(i, i + 6).forEach((t, j) => urls[j] && out.push(toRN(t, urls[j]!)));
+      }
+      return out;
+    };
+    try {
+      for (let i = 0; i < after.length; i += 6) {
+        const chunk = await resolve(after.slice(i, i + 6));
+        if (!chunk || token !== playToken) return;
+        if (chunk.length) await TrackPlayer.add(chunk);
+      }
+      const earlier = await resolve(before);
+      if (earlier && earlier.length && token === playToken) await TrackPlayer.add(earlier, 0);
+    } catch (e) {
+      console.warn('[player] could not fill queue', e);
     }
   }
 
@@ -163,9 +237,16 @@ class PlayerService {
   }
 
   async toggle() {
+    await this.init();
     const { state } = await TrackPlayer.getPlaybackState();
-    if (state === State.Playing) await TrackPlayer.pause();
-    else await TrackPlayer.play();
+    if (await isActivelyPlaying(state)) return TrackPlayer.pause();
+    if (state === State.Ended) await TrackPlayer.seekTo(0);
+    if (state === State.Error) {
+      errorStreak = 0;
+      retried.clear();
+      return this.recover();
+    }
+    await TrackPlayer.play();
   }
 
   next = () => TrackPlayer.skipToNext().catch(() => {});

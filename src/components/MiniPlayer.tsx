@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { useProgress } from 'react-native-track-player';
 import { Pause, Play, SkipForward } from 'lucide-react-native';
 import Artwork from './Artwork';
@@ -18,7 +18,7 @@ export default function MiniPlayer() {
   const pct = duration > 0 ? Math.min(1, position / duration) : 0;
 
   return (
-    <Animated.View entering={FadeInDown.springify().damping(18)} style={styles.wrap}>
+    <Animated.View entering={FadeIn.duration(120)} style={styles.wrap}>
       <Pressable style={styles.bar} onPress={() => navigate('Player')} accessibilityLabel={`Now playing ${current.title}. Open player`}>
         <Artwork seed={current.remote_id ?? current.id} coverFile={current.cover_file} size={42} radius={10} />
         <View style={{ flex: 1, minWidth: 0 }}>

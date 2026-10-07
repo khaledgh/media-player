@@ -1,7 +1,9 @@
 import React, { memo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, CloudDownload, EllipsisVertical, Pause, Play } from 'lucide-react-native';
 import Artwork from './Artwork';
+import { useOverlays } from './Overlays';
+import DownloadManager, { useDownloadStatus } from '../services/DownloadManager';
 import { colors, font, formatTime } from '../theme';
 import { displayArtist } from '../data/library';
 import type { Track } from '../data/library';
@@ -20,8 +22,20 @@ interface Props {
 }
 
 function SongRow({ track, isCurrent, isPlaying, selected, selecting, onPress, onLongPress, onMore, onPlay, leading }: Props) {
+  const { toast } = useOverlays();
   const offline = track.download_state !== 'done';
   const downloading = track.download_state === 'downloading';
+  const canDownload = offline && !!track.remote_id; // songs only on this phone have nothing to download
+  const progress = useDownloadStatus((s) => s.active.find((a) => a.trackId === track.id)?.progress);
+
+  async function download() {
+    try {
+      await DownloadManager.downloadTrack(track.id);
+      toast(`Downloaded "${track.title}"`);
+    } catch (e) {
+      toast(e instanceof Error && e.message ? `Download failed: ${e.message}` : 'Download failed');
+    }
+  }
   return (
     <Pressable
       onPress={onPress}
@@ -62,6 +76,24 @@ function SongRow({ track, isCurrent, isPlaying, selected, selecting, onPress, on
           >
             {isCurrent && isPlaying ? <Pause size={14} color="#fff" fill="#fff" /> : <Play size={14} color="#fff" fill="#fff" style={{ marginLeft: 2 }} />}
           </Pressable>
+          {canDownload && (
+            <Pressable
+              onPress={download}
+              disabled={downloading}
+              hitSlop={8}
+              accessibilityLabel={downloading ? 'Downloading' : 'Download for offline'}
+              style={styles.more}
+            >
+              {downloading ? (
+                <View style={styles.spinner}>
+                  <ActivityIndicator size="small" color={colors.brand} />
+                  {progress !== undefined && progress > 0 && <Text style={styles.pct}>{Math.round(progress * 100)}</Text>}
+                </View>
+              ) : (
+                <CloudDownload size={22} color={track.download_state === 'error' ? colors.danger : colors.muted} />
+              )}
+            </Pressable>
+          )}
           {onMore && (
             <Pressable onPress={onMore} hitSlop={10} accessibilityLabel="More options" style={styles.more}>
               <EllipsisVertical size={20} color={colors.muted} />
@@ -81,6 +113,8 @@ const styles = StyleSheet.create({
   meta: { fontFamily: font.regular, fontSize: 12, color: colors.muted, flexShrink: 1 },
   play: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   more: { paddingLeft: 2 },
+  spinner: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+  pct: { position: 'absolute', fontFamily: font.semibold, fontSize: 7, color: colors.text },
   check: {
     width: 22,
     height: 22,

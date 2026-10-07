@@ -52,6 +52,10 @@ type R2 = S3
 
 func normalizeCustomDomain(d string) string {
 	d = strings.TrimSpace(d)
+	// A stray "# comment" or trailing words in .env must not leak into every URL.
+	if i := strings.IndexAny(d, "# \t"); i >= 0 {
+		d = d[:i]
+	}
 	if d == "" {
 		return ""
 	}
