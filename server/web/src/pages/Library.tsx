@@ -14,6 +14,7 @@ import {
   Pencil,
   Play,
   Search,
+  Sparkles,
   ShieldCheck,
   Trash2,
   UploadCloud,
@@ -24,6 +25,7 @@ import { api, formatBytes, formatDuration, uploadFiles } from '../api';
 import type { AdminUser, Folder, Group, ImportJob, Track } from '../api';
 import { Badge, Button, Card, Checkbox, Empty, IconButton, Input, Modal, Select, Spinner, cx, errMsg, useConfirm, useToast } from '../components/ui';
 import { PageHeader } from '../components/Layout';
+import { AiRename } from '../components/AiRename';
 import { StatusBadge } from './YouTube';
 
 type Node = Folder & { children: Node[] };
@@ -379,6 +381,8 @@ function TracksTab({ folder }: { folder: Folder }) {
   const [dragging, setDragging] = useState<number | null>(null);
   const [editing, setEditing] = useState<Track | null>(null);
   const [adding, setAdding] = useState(false);
+  const [picked, setPicked] = useState<number[]>([]);
+  const [aiOpen, setAiOpen] = useState(false);
   const player = usePreview();
 
   useEffect(() => setOrder(tracks.data ?? []), [tracks.data]);
@@ -423,9 +427,16 @@ function TracksTab({ folder }: { folder: Folder }) {
       <Uploader folderId={folder.id} onImported={refresh} />
       <div className="mt-6 mb-2 flex items-center justify-between">
         <h3 className="font-semibold">Songs</h3>
-        <Button variant="ghost" icon={<ListPlus className="size-4" />} onClick={() => setAdding(true)}>
-          Add from library
-        </Button>
+        <div className="flex items-center gap-1">
+          {order.length > 0 && (
+            <Button variant="ghost" icon={<Sparkles className="size-4" />} onClick={() => setAiOpen(true)}>
+              Fix names with AI{picked.length ? ` (${picked.length})` : ''}
+            </Button>
+          )}
+          <Button variant="ghost" icon={<ListPlus className="size-4" />} onClick={() => setAdding(true)}>
+            Add from library
+          </Button>
+        </div>
       </div>
       {tracks.isLoading ? (
         <Spinner />
@@ -443,6 +454,13 @@ function TracksTab({ folder }: { folder: Folder }) {
               className={cx('group flex items-center gap-3 py-2.5', dragging === i && 'opacity-40')}
             >
               <GripVertical className="size-4 shrink-0 cursor-grab text-muted/60" aria-hidden />
+              <input
+                type="checkbox"
+                aria-label={`Select ${t.title}`}
+                className="size-4 shrink-0 accent-[#ff8216]"
+                checked={picked.includes(t.id)}
+                onChange={(e) => setPicked((p) => (e.target.checked ? [...p, t.id] : p.filter((x) => x !== t.id)))}
+              />
               <Cover track={t} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{t.title}</p>
@@ -472,7 +490,24 @@ function TracksTab({ folder }: { folder: Folder }) {
           ))}
         </ul>
       )}
-      <EditTrack track={editing} onClose={() => setEditing(null)} onSaved={refresh} />
+      <EditTrack
+        track={editing}
+        onClose={() => setEditing(null)}
+        onSaved={refresh}
+        onAi={(id) => {
+          setPicked([id]);
+          setAiOpen(true);
+        }}
+      />
+      <AiRename
+        open={aiOpen}
+        trackIds={picked.length ? picked : order.map((t) => t.id).slice(0, 100)}
+        onClose={() => setAiOpen(false)}
+        onDone={() => {
+          setPicked([]);
+          refresh();
+        }}
+      />
       <AddExisting open={adding} folderId={folder.id} existing={order.map((t) => t.id)} onClose={() => setAdding(false)} onAdded={refresh} />
     </div>
   );
@@ -619,7 +654,7 @@ function Uploader({ folderId, onImported }: { folderId: number; onImported: () =
   );
 }
 
-function EditTrack({ track, onClose, onSaved }: { track: Track | null; onClose: () => void; onSaved: () => void }) {
+function EditTrack({ track, onClose, onSaved, onAi }: { track: Track | null; onClose: () => void; onSaved: () => void; onAi: (id: number) => void }) {
   const toast = useToast();
   const [form, setForm] = useState({ title: '', artist: '', album: '' });
   useEffect(() => {
@@ -654,6 +689,16 @@ function EditTrack({ track, onClose, onSaved }: { track: Track | null; onClose: 
         <Input label="Title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
         <Input label="Artist" value={form.artist} onChange={(e) => setForm({ ...form, artist: e.target.value })} />
         <Input label="Album" value={form.album} onChange={(e) => setForm({ ...form, album: e.target.value })} />
+        <Button
+          variant="secondary"
+          icon={<Sparkles className="size-4" />}
+          onClick={() => {
+            onClose();
+            onAi(track!.id);
+          }}
+        >
+          Suggest with AI
+        </Button>
         <p className="text-xs text-muted">Changes reach every app on its next sync.</p>
       </div>
     </Modal>

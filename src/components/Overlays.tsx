@@ -1,7 +1,8 @@
-import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { downloadToFolder } from '../hooks/downloadToFolder';
+import { aiRenameSongs } from '../hooks/aiRename';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   CloudDownload,
@@ -15,6 +16,7 @@ import {
   ListPlus,
   ListStart,
   Share2,
+  Sparkles,
   Trash2,
   UserRound,
 } from 'lucide-react-native';
@@ -22,17 +24,22 @@ import Artwork from './Artwork';
 import { colors, font, formatBytes, formatTime, radius, type } from '../theme';
 import {
   copyTracks,
+  createFavFolder,
   createFolder,
   displayArtist,
   getAllFolders,
+  getFavFolders,
+  getFavoriteFolderId,
   isFavorite,
   moveItems,
   removeItems,
+  setFavoriteFolder,
   toggleFavorite,
 } from '../data/library';
 import type { Folder, Track } from '../data/library';
 import Player from '../services/PlayerService';
 import DownloadManager from '../services/DownloadManager';
+import { useRestorePrompt } from '../services/SyncService';
 import { navigate } from '../navigation/ref';
 
 // ---------- generic sheet ----------
@@ -184,6 +191,23 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({ toast, confirm, prompt, pickFolder, songMenu, choose, actions }), [toast, confirm, prompt, pickFolder, songMenu, choose, actions]);
 
+  // A fresh install of an account that downloaded songs elsewhere: offer to download them here too.
+  const restore = useRestorePrompt((s) => s.pending);
+  useEffect(() => {
+    if (!restore) return;
+    useRestorePrompt.setState({ pending: null });
+    const n = restore.trackIds.length;
+    confirm({
+      title: 'Download your songs here?',
+      message: `You downloaded ${n} song${n === 1 ? '' : 's'} on another device. Download ${n === 1 ? 'it' : 'them'} on this phone too?`,
+      confirm: 'Download',
+    }).then((ok) => {
+      if (!ok) return;
+      toast(`Downloading ${n} song${n === 1 ? '' : 's'}…`);
+      DownloadManager.downloadTracks(restore.trackIds).catch(() => {});
+    });
+  }, [restore, confirm, toast]);
+
   const closeConfirm = (v: boolean) => {
     confirmP.current?.resolve(v);
     confirmP.current = null;
@@ -293,6 +317,39 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
                       toast('Moved');
                     }
                   })}
+                />
+              )}
+              <SheetItem
+                icon={<Heart size={20} color={colors.text} />}
+                label="Favorites Folder"
+                onPress={runMenu(async () => {
+                  const folders = await getFavFolders();
+                  const current = await getFavoriteFolderId(m.track.id);
+                  const pick = await choose<string>({
+                    title: 'Favorites folder',
+                    selected: current ? String(current) : '__none',
+                    options: [
+                      { value: '__none', label: 'No folder' },
+                      ...folders.map((f) => ({ value: String(f.id), label: f.name })),
+                      { value: '__new', label: '+ New folder' },
+                    ],
+                  });
+                  if (!pick) return;
+                  let target: number | null;
+                  if (pick === '__new') {
+                    const name = await prompt({ title: 'New favorites folder', placeholder: 'e.g. Road trip, Gym', confirm: 'Create' });
+                    if (!name) return;
+                    target = await createFavFolder(name);
+                  } else target = pick === '__none' ? null : Number(pick);
+                  await setFavoriteFolder(m.track.id, target);
+                  toast(target ? 'Saved to your favorites folder' : 'Moved out of folders');
+                })}
+              />
+              {!!m.track.remote_id && (
+                <SheetItem
+                  icon={<Sparkles size={20} color={colors.text} />}
+                  label="Fix Name with AI"
+                  onPress={runMenu(() => aiRenameSongs([m.track], { toast, confirm, choose }))}
                 />
               )}
               {!!m.track.album && (

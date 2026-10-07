@@ -235,22 +235,91 @@ export async function getTracksBy(kind: 'artist' | 'album', name: string): Promi
   );
 }
 
-export async function getFavorites(): Promise<Track[]> {
+/** Favorites, newest first. `folderId` limits it to one favorites folder; `null` = not in any folder. */
+export async function getFavorites(folderId?: number | null): Promise<Track[]> {
+  const where = folderId === undefined ? '' : folderId === null ? 'AND f.folder_id IS NULL' : 'AND f.folder_id = ?';
   return getDb().getAllAsync<Track>(
-    'SELECT t.* FROM favorites f JOIN tracks t ON t.id = f.track_id ORDER BY f.added_at DESC',
+    `SELECT t.* FROM favorites f JOIN tracks t ON t.id = f.track_id WHERE f.deleted = 0 ${where} ORDER BY f.added_at DESC`,
+    typeof folderId === 'number' ? [folderId] : [],
   );
 }
 
 export async function isFavorite(trackId: number) {
-  return !!(await getDb().getFirstAsync('SELECT 1 FROM favorites WHERE track_id = ?', [trackId]));
+  return !!(await getDb().getFirstAsync('SELECT 1 FROM favorites WHERE track_id = ? AND deleted = 0', [trackId]));
 }
 
+/** Favorites are synced like everything else: a deleted favorite stays as a tombstone until the server has it. */
 export async function toggleFavorite(trackId: number): Promise<boolean> {
   const fav = await isFavorite(trackId);
-  if (fav) await getDb().runAsync('DELETE FROM favorites WHERE track_id = ?', [trackId]);
-  else await getDb().runAsync('INSERT OR IGNORE INTO favorites (track_id, added_at) VALUES (?, ?)', [trackId, Date.now()]);
+  const now = Date.now();
+  if (fav) await getDb().runAsync('UPDATE favorites SET deleted = 1, dirty = 1, updated_at = ? WHERE track_id = ?', [now, trackId]);
+  else
+    await getDb().runAsync(
+      `INSERT INTO favorites (track_id, added_at, folder_id, updated_at, deleted, dirty) VALUES (?, ?, NULL, ?, 0, 1)
+       ON CONFLICT(track_id) DO UPDATE SET deleted = 0, folder_id = NULL, added_at = excluded.added_at, updated_at = excluded.updated_at, dirty = 1`,
+      [trackId, now, now],
+    );
   libraryEvents.emit();
+  outboxListener?.();
   return !fav;
+}
+
+export interface FavFolder {
+  id: number;
+  remote_id: number | null;
+  name: string;
+  count: number;
+}
+
+export async function getFavFolders(): Promise<FavFolder[]> {
+  return getDb().getAllAsync<FavFolder>(
+    `SELECT ff.id, ff.remote_id, ff.name,
+       (SELECT COUNT(*) FROM favorites f WHERE f.folder_id = ff.id AND f.deleted = 0) AS count
+     FROM fav_folders ff WHERE ff.deleted = 0 ORDER BY ff.name COLLATE NOCASE`,
+  );
+}
+
+export async function getFavoriteFolderId(trackId: number): Promise<number | null> {
+  const r = await getDb().getFirstAsync<{ folder_id: number | null }>('SELECT folder_id FROM favorites WHERE track_id = ? AND deleted = 0', [trackId]);
+  return r?.folder_id ?? null;
+}
+
+export async function createFavFolder(name: string): Promise<number> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Folder name is required');
+  const r = await getDb().runAsync('INSERT INTO fav_folders (name, updated_at, deleted, dirty) VALUES (?, ?, 0, 1)', [trimmed, Date.now()]);
+  libraryEvents.emit();
+  outboxListener?.();
+  return r.lastInsertRowId;
+}
+
+export async function renameFavFolder(id: number, name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Folder name is required');
+  await getDb().runAsync('UPDATE fav_folders SET name = ?, updated_at = ?, dirty = 1 WHERE id = ?', [trimmed, Date.now(), id]);
+  libraryEvents.emit();
+  outboxListener?.();
+}
+
+/** Deleting a favorites folder keeps its songs in Favorites. */
+export async function deleteFavFolder(id: number) {
+  const now = Date.now();
+  await getDb().runAsync('UPDATE favorites SET folder_id = NULL, dirty = 1, updated_at = ? WHERE folder_id = ?', [now, id]);
+  await getDb().runAsync('UPDATE fav_folders SET deleted = 1, dirty = 1, updated_at = ? WHERE id = ?', [now, id]);
+  libraryEvents.emit();
+  outboxListener?.();
+}
+
+/** Puts a song in a favorites folder (null = no folder). The song becomes a favorite if it is not one yet. */
+export async function setFavoriteFolder(trackId: number, folderId: number | null) {
+  const now = Date.now();
+  await getDb().runAsync(
+    `INSERT INTO favorites (track_id, added_at, folder_id, updated_at, deleted, dirty) VALUES (?, ?, ?, ?, 0, 1)
+     ON CONFLICT(track_id) DO UPDATE SET deleted = 0, folder_id = excluded.folder_id, updated_at = excluded.updated_at, dirty = 1`,
+    [trackId, now, folderId, now],
+  );
+  libraryEvents.emit();
+  outboxListener?.();
 }
 
 export async function recordPlay(trackId: number) {

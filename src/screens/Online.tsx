@@ -3,6 +3,7 @@ import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Cloud, Search } from 'lucide-react-native';
 import Header from '../components/Header';
 import SongRow from '../components/SongRow';
+import PlayAllBar from '../components/PlayAllBar';
 import { Empty } from '../components/ui';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
@@ -48,9 +49,12 @@ export default function Online() {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
           list.length ? (
-            <Text style={[type.caption, styles.hint]}>
-              {list.length} songs online · tap <Text style={{ color: colors.brand }}>the cloud</Text> to save one to a folder · pull down to refresh
-            </Text>
+            <>
+              <PlayAllBar tracks={list} onPlay={(tracks, index, opts) => a.play(tracks, index, { ...opts, title: 'Online library' })} />
+              <Text style={[type.caption, styles.hint]}>
+                {list.length} songs online · tap <Text style={{ color: colors.brand }}>the cloud</Text> to save one to a folder · pull down to refresh
+              </Text>
+            </>
           ) : null
         }
         ListEmptyComponent={
@@ -67,7 +71,7 @@ export default function Online() {
             track={item}
             isCurrent={item.id === current}
             isPlaying={isPlaying}
-            onPress={() => (item.id === current ? Player.toggle() : a.play(list.slice(index, index + 50), 0, { title: 'Online library' }))}
+            onPress={() => (item.id === current ? Player.toggle() : a.play(list, index, { title: 'Online library' }))}
             onMore={() => a.songMenu(item)}
           />
         )}

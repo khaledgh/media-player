@@ -226,6 +226,7 @@ func (s *Server) createYouTube(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		URL      string `json:"url"`
 		FolderID int64  `json:"folder_id"`
+		AILang   string `json:"ai_lang"` // "ar" | "en" | "" (keep YouTube's title)
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -241,7 +242,7 @@ func (s *Server) createYouTube(w http.ResponseWriter, r *http.Request) {
 		fail(w, library.ErrForbidden)
 		return
 	}
-	id, err := s.Jobs.EnqueueYouTube(ctx, userID, in.FolderID, in.URL)
+	id, err := s.Jobs.EnqueueYouTube(ctx, userID, in.FolderID, in.URL, in.AILang)
 	if err != nil {
 		fail(w, err)
 		return

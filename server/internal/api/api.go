@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"mume/server/internal/ai"
 	"mume/server/internal/auth"
 	"mume/server/internal/jobs"
 	"mume/server/internal/library"
@@ -27,6 +28,7 @@ type Server struct {
 	Lib       *library.Library
 	Jobs      *jobs.Runner
 	Store     storage.Store
+	AI        *ai.Client
 	MaxUpload int64
 	Web       fs.FS        // built CMS (may be nil)
 	Files     http.Handler // local storage file server (nil when using R2)
@@ -61,6 +63,14 @@ func (s *Server) Router() http.Handler {
 			r.Post("/sync/push", s.syncPush)
 			r.Get("/tracks/{id}/url", s.trackURL)
 			r.Post("/tracks/upload", s.uploadTrack)
+			r.Patch("/tracks/{id}", s.userUpdateTrack)
+			r.Post("/tracks/ai-suggest", s.suggestNames)
+			r.Get("/favorites", s.getFavorites)
+			r.Post("/favorites/push", s.pushFavorites)
+			r.Post("/plays", s.recordPlays)
+			r.Get("/recommendations", s.recommendations)
+			r.Get("/downloads", s.listDownloads)
+			r.Post("/downloads", s.recordDownloads)
 			r.Post("/youtube", s.createYouTube)
 			r.Get("/youtube/{id}", s.getYouTube)
 

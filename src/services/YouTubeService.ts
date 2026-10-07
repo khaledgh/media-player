@@ -39,7 +39,7 @@ class YouTubeService {
   }
 
   /** Asks the server to fetch a video's audio into a folder. */
-  async add(url: string, folderId: number) {
+  async add(url: string, folderId: number, aiLang?: 'ar' | 'en') {
     if (!isYouTubeUrl(url)) throw new Error('Paste a YouTube video link, e.g. https://youtu.be/…');
     let folder = await getDb().getFirstAsync<{ remote_id: number | null; name: string; shared: number }>(
       'SELECT remote_id, name, shared FROM folders WHERE id = ?',
@@ -56,6 +56,7 @@ class YouTubeService {
     const job = await api.post<{ id: number; url: string; status: YouTubeJob['status'] }>('/youtube', {
       url: url.trim(),
       folder_id: folder.remote_id,
+      ...(aiLang ? { ai_lang: aiLang } : {}),
     });
     await this.save([...useYouTubeJobs.getState().jobs, { id: job.id, url: job.url, status: job.status, folderName: folder.name }]);
     this.poll();

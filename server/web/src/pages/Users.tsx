@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MonitorSmartphone, Pencil, Plus, Search, Trash2, UserRound } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { BarChart3, MonitorSmartphone, Pencil, Plus, Search, Trash2, UserRound } from 'lucide-react';
 import { api, auth, timeAgo } from '../api';
 import type { AdminUser, Group, Role, Session } from '../api';
 import { Badge, Button, Card, Checkbox, Empty, IconButton, Input, Modal, Select, Spinner, Toggle, errMsg, useConfirm, useToast } from '../components/ui';
@@ -137,6 +138,14 @@ export default function Users() {
                       </td>
                       <td className="px-5 py-3">
                         <div className="flex justify-end gap-1">
+                          <Link
+                            to={`/users/${u.id}`}
+                            aria-label="Listening activity"
+                            title="Listening activity"
+                            className="flex size-9 items-center justify-center rounded-xl text-muted hover:bg-surface-2 hover:text-white"
+                          >
+                            <BarChart3 className="size-4" />
+                          </Link>
                           <IconButton label="Signed-in devices" onClick={() => setSessionsFor(u)}>
                             <MonitorSmartphone className="size-4" />
                           </IconButton>

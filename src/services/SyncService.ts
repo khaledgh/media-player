@@ -15,6 +15,9 @@ interface SyncStatus {
   firstSyncDone: boolean;
 }
 
+/** Songs this account downloaded on another device; the UI offers to download them here. */
+export const useRestorePrompt = create<{ pending: { trackIds: number[] } | null }>(() => ({ pending: null }));
+
 export const useSyncStatus = create<SyncStatus>(() => ({
   syncing: false,
   offline: false,
@@ -67,6 +70,20 @@ interface PushResult {
   errors: { index: number; error: string }[];
 }
 
+interface RemoteFavFolder {
+  id: number;
+  name: string;
+  updated_at: number;
+  deleted: boolean;
+}
+interface RemoteFavItem {
+  track_id: number;
+  folder_id: number | null;
+  added_at: number;
+  updated_at: number;
+  deleted: boolean;
+}
+
 type WireOp = Record<string, unknown> & { op: string };
 
 class SyncService {
@@ -79,6 +96,7 @@ class SyncService {
   /** Starts background syncing for the signed-in user. */
   start() {
     onOutboxChange(() => this.schedulePush());
+    DownloadManager.onDownloaded(() => this.schedulePush());
     this.appStateSub?.remove();
     this.appStateSub = AppState.addEventListener('change', (s) => s === 'active' && this.run());
     if (this.interval) clearInterval(this.interval);
@@ -128,6 +146,11 @@ class SyncService {
       await this.push(); // item ops queued by uploads
       await this.pull();
       await kvSet('first_sync_done', '1');
+      // Favorites and download history must never block the library sync.
+      await this.syncFavorites().catch((e) => this.sideSyncFailed('favorites', e));
+      await this.reportDownloads().catch((e) => this.sideSyncFailed('downloads', e));
+      await this.reportPlays().catch((e) => this.sideSyncFailed('plays', e));
+      await this.checkDownloadHistory().catch((e) => this.sideSyncFailed('download history', e));
       useSyncStatus.setState({ offline: false, error: null, lastSyncAt: Date.now(), firstSyncDone: true });
     } catch (e) {
       if (e instanceof OfflineError) useSyncStatus.setState({ offline: true, error: null });
@@ -139,6 +162,148 @@ class SyncService {
       useSyncStatus.setState({ syncing: false });
       DownloadManager.kick();
     }
+  }
+
+  private sideSyncFailed(what: string, e: unknown) {
+    if (e instanceof OfflineError) throw e;
+    console.warn(`[sync] ${what} failed:`, e);
+  }
+
+  // ---------- favorites ----------
+
+  /** Sends favorite changes (last write wins per song/folder), then merges the server copy. */
+  private async syncFavorites() {
+    const db = getDb();
+    const folders = await db.getAllAsync<{ id: number; remote_id: number | null; name: string; updated_at: number; deleted: number }>(
+      'SELECT id, remote_id, name, updated_at, deleted FROM fav_folders WHERE dirty = 1',
+    );
+    const items = await db.getAllAsync<{
+      track_id: number;
+      track_remote: number;
+      folder_id: number | null;
+      folder_remote: number | null;
+      added_at: number;
+      updated_at: number;
+      deleted: number;
+    }>(
+      `SELECT f.track_id, t.remote_id AS track_remote, f.folder_id, ff.remote_id AS folder_remote, f.added_at, f.updated_at, f.deleted
+       FROM favorites f JOIN tracks t ON t.id = f.track_id LEFT JOIN fav_folders ff ON ff.id = f.folder_id
+       WHERE f.dirty = 1 AND t.remote_id IS NOT NULL`,
+    );
+    if (folders.length || items.length) {
+      const res = await api.post<{ folders: Record<string, number> }>('/favorites/push', {
+        folders: folders.map((f) => ({ ref: `f${f.id}`, id: f.remote_id ?? 0, name: f.name, updated_at: f.updated_at, deleted: !!f.deleted })),
+        items: items.map((i) => ({
+          track_id: i.track_remote,
+          ...(i.folder_id ? (i.folder_remote ? { folder_id: i.folder_remote } : { folder_ref: `f${i.folder_id}` }) : {}),
+          added_at: i.added_at,
+          updated_at: i.updated_at,
+          deleted: !!i.deleted,
+        })),
+      });
+      await inTransaction(async () => {
+        for (const [ref, id] of Object.entries(res.folders)) {
+          await db.runAsync('UPDATE fav_folders SET remote_id = ? WHERE id = ?', [id, Number(ref.slice(1))]);
+        }
+        // Only rows untouched since they were sent are clean; newer local edits go out next time.
+        for (const f of folders) await db.runAsync('UPDATE fav_folders SET dirty = 0 WHERE id = ? AND updated_at = ?', [f.id, f.updated_at]);
+        for (const i of items) await db.runAsync('UPDATE favorites SET dirty = 0 WHERE track_id = ? AND updated_at = ?', [i.track_id, i.updated_at]);
+      });
+    }
+
+    const remote = await api.get<{ folders: RemoteFavFolder[]; items: RemoteFavItem[] }>('/favorites');
+    await inTransaction(async () => {
+      for (const f of remote.folders) {
+        const local = await db.getFirstAsync<{ id: number; updated_at: number }>('SELECT id, updated_at FROM fav_folders WHERE remote_id = ?', [f.id]);
+        if (!local) {
+          if (!f.deleted)
+            await db.runAsync('INSERT INTO fav_folders (remote_id, name, updated_at, deleted, dirty) VALUES (?, ?, ?, 0, 0)', [f.id, f.name, f.updated_at]);
+        } else if (f.updated_at > local.updated_at) {
+          await db.runAsync('UPDATE fav_folders SET name = ?, deleted = ?, updated_at = ?, dirty = 0 WHERE id = ?', [f.name, f.deleted ? 1 : 0, f.updated_at, local.id]);
+        }
+      }
+      for (const it of remote.items) {
+        const track = await db.getFirstAsync<{ id: number }>('SELECT id FROM tracks WHERE remote_id = ?', [it.track_id]);
+        if (!track) continue; // not in this device's library
+        const folder = it.folder_id ? await db.getFirstAsync<{ id: number }>('SELECT id FROM fav_folders WHERE remote_id = ?', [it.folder_id]) : null;
+        const local = await db.getFirstAsync<{ updated_at: number }>('SELECT updated_at FROM favorites WHERE track_id = ?', [track.id]);
+        if (!local) {
+          if (!it.deleted)
+            await db.runAsync('INSERT INTO favorites (track_id, added_at, folder_id, updated_at, deleted, dirty) VALUES (?, ?, ?, ?, 0, 0)', [
+              track.id,
+              it.added_at,
+              folder?.id ?? null,
+              it.updated_at,
+            ]);
+        } else if (it.updated_at > local.updated_at) {
+          await db.runAsync('UPDATE favorites SET folder_id = ?, added_at = ?, deleted = ?, updated_at = ?, dirty = 0 WHERE track_id = ?', [
+            folder?.id ?? null,
+            it.added_at,
+            it.deleted ? 1 : 0,
+            it.updated_at,
+            track.id,
+          ]);
+        }
+      }
+    });
+    libraryEvents.emit();
+  }
+
+  // ---------- download history ----------
+
+  /** Sends play counts (per song and day) so the admin statistics and recommendations know what you listen to. */
+  private async reportPlays() {
+    const db = getDb();
+    for (;;) {
+      const rows = await db.getAllAsync<{ id: number; remote_id: number; played_at: number }>(
+        `SELECT p.id, t.remote_id, p.played_at FROM plays p JOIN tracks t ON t.id = p.track_id
+         WHERE p.reported = 0 AND t.remote_id IS NOT NULL ORDER BY p.id LIMIT 1000`,
+      );
+      if (!rows.length) break;
+      const groups = new Map<string, { track_id: number; day: string; count: number; at: number }>();
+      for (const r of rows) {
+        const d = new Date(r.played_at);
+        const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const key = `${r.remote_id}|${day}`;
+        const g = groups.get(key) ?? { track_id: r.remote_id, day, count: 0, at: 0 };
+        g.count++;
+        g.at = Math.max(g.at, r.played_at);
+        groups.set(key, g);
+      }
+      await api.post('/plays', { plays: [...groups.values()] });
+      await db.runAsync(`UPDATE plays SET reported = 1 WHERE id IN (${rows.map((r) => r.id).join(',')})`);
+    }
+    // Reported plays older than a day are only needed locally for Recently/Most Played; keep them.
+  }
+
+  /** Tells the server which songs this device has downloaded, so another device can offer them. */
+  private async reportDownloads() {
+    const db = getDb();
+    for (;;) {
+      const rows = await db.getAllAsync<{ id: number; remote_id: number }>(
+        `SELECT id, remote_id FROM tracks WHERE download_state = 'done' AND remote_id IS NOT NULL AND dl_reported = 0 LIMIT 500`,
+      );
+      if (!rows.length) return;
+      await api.post('/downloads', { track_ids: rows.map((r) => r.remote_id) });
+      await db.runAsync(`UPDATE tracks SET dl_reported = 1 WHERE id IN (${rows.map((r) => r.id).join(',')})`);
+    }
+  }
+
+  /** On the first sync of a fresh install, offers the songs this account downloaded elsewhere. */
+  private async checkDownloadHistory() {
+    if ((await kvGet('dl_history_checked')) === '1') return;
+    const { track_ids } = await api.get<{ track_ids: number[] }>('/downloads');
+    const db = getDb();
+    const missing: number[] = [];
+    for (const remote of track_ids) {
+      const t = await db.getFirstAsync<{ id: number }>(
+        `SELECT t.id FROM tracks t WHERE t.remote_id = ? AND t.download_state != 'done' AND EXISTS (SELECT 1 FROM items i WHERE i.track_id = t.id)`,
+        [remote],
+      );
+      if (t) missing.push(t.id);
+    }
+    await kvSet('dl_history_checked', '1');
+    if (missing.length) useRestorePrompt.setState({ pending: { trackIds: missing } });
   }
 
   // ---------- push ----------

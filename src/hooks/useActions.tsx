@@ -1,14 +1,16 @@
 import React, { useCallback } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
-import { CloudDownload, CloudOff, FolderInput, FolderPlus, ListMusic, Pencil, Play, Shuffle, SquarePlay, Trash2, Upload } from 'lucide-react-native';
+import { CloudDownload, CloudOff, FolderInput, FolderPlus, ListMusic, Pencil, Play, Shuffle, Sparkles, SquarePlay, Trash2, Upload } from 'lucide-react-native';
 import { useOverlays } from '../components/Overlays';
 import Artwork from '../components/Artwork';
 import Player from '../services/PlayerService';
 import DownloadManager from '../services/DownloadManager';
 import YouTubeService from '../services/YouTubeService';
+import { aiRenameSongs, chooseAiLang } from './aiRename';
 import {
   createFolder,
   deleteFolder,
+  getFolderTracks,
   getFolderTracksDeep,
   getSubtreeIds,
   importLocalFile,
@@ -70,10 +72,21 @@ export function useActions() {
         hint: 'The song is saved to the cloud and downloads to all your devices.',
       });
       if (!url) return;
+      // The AI also files the song under its singer's folder, so a folder is only asked for as a fallback.
+      const lang = await o.choose<'ar' | 'en' | 'off'>({
+        title: 'Fix the song name with AI?',
+        selected: 'ar',
+        options: [
+          { value: 'ar', label: 'Yes — write in Arabic (العربية)' },
+          { value: 'en', label: 'Yes — write in English' },
+          { value: 'off', label: 'No — keep the YouTube title' },
+        ],
+      });
+      if (!lang) return;
       const target = folderId ?? (await o.pickFolder({ title: 'Save to folder' }));
       if (!target) return;
       try {
-        await YouTubeService.add(url, target);
+        await YouTubeService.add(url, target, lang === 'off' ? undefined : lang);
         o.toast('Getting the audio… it will appear in the folder shortly');
       } catch (e) {
         o.toast(e instanceof Error ? e.message : String(e));
@@ -142,6 +155,15 @@ export function useActions() {
               }
             : { label: 'Download folder', icon: icon(CloudDownload), onPress: () => (DownloadManager.downloadFolder(folder.id), o.toast('Downloading for offline')) },
           { label: 'Sort songs', icon: icon(ListMusic), onPress: () => chooseSort(folder) },
+          ...(own
+            ? [
+                {
+                  label: 'Fix names with AI',
+                  icon: icon(Sparkles),
+                  onPress: async () => aiRenameSongs(await getFolderTracks(folder.id), { toast: o.toast, confirm: o.confirm, choose: o.choose }),
+                },
+              ]
+            : []),
           ...(own
             ? [
                 { label: 'Add from YouTube', icon: icon(SquarePlay), onPress: () => addFromYouTube(folder.id) },

@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Library from './pages/Library';
 import Users from './pages/Users';
+import UserActivity from './pages/UserActivity';
 import Groups from './pages/Groups';
 import YouTube from './pages/YouTube';
 
@@ -27,6 +28,7 @@ function App() {
         <Route path="library" element={<Library />} />
         <Route path="library/:folderId" element={<Library />} />
         <Route path="users" element={<Users />} />
+        <Route path="users/:userId" element={<UserActivity />} />
         <Route path="groups" element={<Groups />} />
         <Route path="youtube" element={<YouTube />} />
         <Route path="*" element={<Navigate to="/" replace />} />

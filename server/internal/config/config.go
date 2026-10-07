@@ -36,6 +36,9 @@ type Config struct {
 	NodeYTURL string
 	NodeYTKey string
 
+	GeminiKey   string
+	GeminiModel string
+
 	AdminEmail    string
 	AdminPassword string
 
@@ -97,6 +100,8 @@ func Load() (*Config, error) {
 
 		NodeYTURL:     env("NODE_YT_URL", "http://localhost:3000"),
 		NodeYTKey:     os.Getenv("NODE_YT_KEY"),
+		GeminiKey:     os.Getenv("GEMINI_API_KEY"),
+		GeminiModel:   env("GEMINI_MODEL", "gemini-2.5-flash"),
 		AdminEmail:    os.Getenv("ADMIN_BOOTSTRAP_EMAIL"),
 		AdminPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
 		AccessTTL:     time.Hour,

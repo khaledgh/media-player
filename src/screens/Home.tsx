@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Dimensions, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Dimensions, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { ArrowDownUp, FolderPlus, Music, SquarePlay } from 'lucide-react-native';
+import { ArrowDownUp, FolderPlus, Music, Play, Sparkles, SquarePlay } from 'lucide-react-native';
 import Header from '../components/Header';
 import Artwork from '../components/Artwork';
 import SongRow from '../components/SongRow';
@@ -27,15 +27,16 @@ import type { SortMode, Track } from '../data/library';
 import { colors, font, type } from '../theme';
 import { navigate } from '../navigation/ref';
 import { useSyncStatus } from '../services/SyncService';
+import { loadRecommendations, resolveShelves, useRecommendations } from '../services/Recommendations';
 
-const TABS = ['Suggested', 'Songs', 'Artists', 'Albums', 'Folders', 'Shared'] as const;
+const TABS = ['For You', 'Songs', 'Artists', 'Albums', 'Folders', 'Shared'] as const;
 type Tab = (typeof TABS)[number];
 export const BOTTOM_SPACE = 170; // tab bar + mini player
 
 const { width } = Dimensions.get('window');
 
 export default function Home() {
-  const [tab, setTab] = useState<Tab>('Suggested');
+  const [tab, setTab] = useState<Tab>('For You');
   return (
     <View style={styles.root}>
       <Header />
@@ -48,7 +49,7 @@ export default function Home() {
         ))}
       </ScrollView>
       <View style={styles.tabsLine} />
-      {tab === 'Suggested' && <Suggested onSeeAll={setTab} />}
+      {tab === 'For You' && <Suggested onSeeAll={setTab} />}
       {tab === 'Songs' && <Songs />}
       {tab === 'Artists' && <Artists />}
       {tab === 'Albums' && <Albums />}
@@ -78,7 +79,7 @@ function useTapToPlay(list: Track[] | undefined, title: string) {
   );
 }
 
-// ---------- Suggested ----------
+// ---------- For You ----------
 
 function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
   const recent = useLibrary(() => getRecentlyPlayed(12), []);
@@ -86,8 +87,16 @@ function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
   const artists = useLibrary(() => getArtists(), []);
   const all = useLibrary(() => getAllTracks('added_desc'), []);
   const syncing = useSyncStatus((s) => s.syncing && !s.firstSyncDone);
+  const lastSyncAt = useSyncStatus((s) => s.lastSyncAt);
+  const recs = useRecommendations();
+  const shelves = useLibrary(() => resolveShelves(recs.sections), [recs.sections]);
   const { play, addFromYouTube } = useActions();
   const refreshControl = usePullRefresh();
+
+  // Show the saved feed right away, and refresh it after each sync (the server caches it for a few hours).
+  useEffect(() => {
+    loadRecommendations().catch(() => {});
+  }, [lastSyncAt]);
 
   if (all.data && !all.data.length) {
     return (
@@ -101,15 +110,87 @@ function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
   }
 
   const recentList = recent.data?.length ? recent.data : all.data?.slice(0, 12);
-  const mostList = most.data?.length ? most.data : all.data?.slice(12, 24);
+  const mostList = most.data?.length ? most.data : undefined;
+  const picks = shelves.data ?? [];
+  const mix = interleave(picks.map((p) => p.tracks));
 
   return (
-    <ScrollView contentContainerStyle={{ paddingTop: 20, paddingBottom: BOTTOM_SPACE }} showsVerticalScrollIndicator={false} refreshControl={refreshControl}>
+    <ScrollView contentContainerStyle={{ paddingTop: 16, paddingBottom: BOTTOM_SPACE }} showsVerticalScrollIndicator={false} refreshControl={refreshControl}>
+      {mix.length >= 3 && (
+        <Pressable
+          onPress={() => play(mix, 0, { title: 'Made for you' })}
+          style={({ pressed }) => [styles.hero, pressed && { opacity: 0.92 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Play your personal mix"
+        >
+          <View style={{ flex: 1, gap: 4 }}>
+            <View style={styles.heroTag}>
+              <Sparkles size={12} color="#fff" />
+              <Text style={styles.heroTagText}>{recs.ai ? 'Picked by AI' : 'For you'}</Text>
+            </View>
+            <Text style={styles.heroTitle}>Your mix</Text>
+            <Text style={styles.heroSub} numberOfLines={2}>
+              {mix.length} songs based on what you listen to
+            </Text>
+          </View>
+          <View style={styles.heroPlay}>
+            <Play size={24} color={colors.brand} fill={colors.brand} />
+          </View>
+        </Pressable>
+      )}
+
+      {picks.map((shelf, i) => (
+        <View key={`${shelf.title}-${i}`} style={{ marginTop: i === 0 ? 24 : 28 }}>
+          <View style={styles.pad}>
+            <Text style={type.h3}>{shelf.title}</Text>
+            {!!shelf.reason && (
+              <Text style={[type.caption, { marginTop: 2 }]} numberOfLines={2}>
+                {shelf.reason}
+              </Text>
+            )}
+          </View>
+          <FlatList
+            horizontal
+            data={shelf.tracks}
+            keyExtractor={(t) => String(t.id)}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.hList}
+            renderItem={({ item, index }) => <Card track={item} onPress={() => play(shelf.tracks, index, { title: shelf.title })} />}
+          />
+        </View>
+      ))}
+
+      {!picks.length && recs.loading && (
+        <View style={{ alignItems: 'center', paddingVertical: 28, gap: 8 }}>
+          <ActivityIndicator color={colors.brand} />
+          <Text style={type.caption}>Finding music you will love…</Text>
+        </View>
+      )}
+
+      {!!mostList?.length && (
+        <>
+          <SectionHeader
+            title="Most Played"
+            action="See All"
+            onAction={() => navigate('Songs', { title: 'Most Played', source: 'most' })}
+            style={[styles.pad, { marginTop: 28 }]}
+          />
+          <FlatList
+            horizontal
+            data={mostList}
+            keyExtractor={(t) => String(t.id)}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.hList}
+            renderItem={({ item, index }) => <Card track={item} rank={index + 1} onPress={() => play(mostList, index, { title: 'Most played' })} />}
+          />
+        </>
+      )}
+
       <SectionHeader
         title={recent.data?.length ? 'Recently Played' : 'Recently Added'}
         action="See All"
         onAction={() => (recent.data?.length ? navigate('Songs', { title: 'Recently Played', source: 'recent' }) : onSeeAll('Songs'))}
-        style={styles.pad}
+        style={[styles.pad, { marginTop: 28 }]}
       />
       <FlatList
         horizontal
@@ -140,33 +221,37 @@ function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
           />
         </>
       )}
-
-      {!!mostList?.length && (
-        <>
-          <SectionHeader
-            title={most.data?.length ? 'Most Played' : 'More to explore'}
-            action="See All"
-            onAction={() => (most.data?.length ? navigate('Songs', { title: 'Most Played', source: 'most' }) : onSeeAll('Songs'))}
-            style={[styles.pad, { marginTop: 28 }]}
-          />
-          <FlatList
-            horizontal
-            data={mostList}
-            keyExtractor={(t) => String(t.id)}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.hList}
-            renderItem={({ item, index }) => <Card track={item} onPress={() => play(mostList, index, { title: 'Most played' })} />}
-          />
-        </>
-      )}
     </ScrollView>
   );
 }
 
-function Card({ track, onPress }: { track: Track; onPress: () => void }) {
+/** Takes songs from each shelf in turn so the mix blends them, without repeats. */
+function interleave(lists: Track[][]): Track[] {
+  const seen = new Set<number>();
+  const out: Track[] = [];
+  for (let i = 0; lists.some((l) => i < l.length); i++) {
+    for (const l of lists) {
+      const t = l[i];
+      if (t && !seen.has(t.id)) {
+        seen.add(t.id);
+        out.push(t);
+      }
+    }
+  }
+  return out;
+}
+
+function Card({ track, onPress, rank }: { track: Track; onPress: () => void; rank?: number }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [{ width: 140, gap: 8 }, pressed && { opacity: 0.8 }]} accessibilityLabel={`Play ${track.title}`}>
-      <Artwork seed={track.remote_id ?? track.id} coverFile={track.cover_file} size={140} radius={22} />
+      <View>
+        <Artwork seed={track.remote_id ?? track.id} coverFile={track.cover_file} size={140} radius={22} />
+        {rank !== undefined && (
+          <View style={styles.rank}>
+            <Text style={styles.rankText}>{rank}</Text>
+          </View>
+        )}
+      </View>
       <Text style={[type.bodyMedium, { fontSize: 13 }]} numberOfLines={2}>
         {track.title}
         <Text style={type.caption}>{` - ${displayArtist(track)}`}</Text>
@@ -337,6 +422,27 @@ export function Folders({ shared = false }: { shared?: boolean }) {
 }
 
 const styles = StyleSheet.create({
+  hero: {
+    marginHorizontal: 20,
+    padding: 20,
+    borderRadius: 26,
+    backgroundColor: colors.brand,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    shadowColor: colors.brand,
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  heroTag: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', backgroundColor: 'rgba(0,0,0,0.18)', paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999 },
+  heroTagText: { fontFamily: font.semibold, fontSize: 11, color: '#fff' },
+  heroTitle: { fontFamily: font.bold, fontSize: 26, color: '#fff' },
+  heroSub: { fontFamily: font.regular, fontSize: 13, color: 'rgba(255,255,255,0.85)' },
+  heroPlay: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  rank: { position: 'absolute', left: 8, bottom: 8, minWidth: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  rankText: { fontFamily: font.bold, fontSize: 12, color: '#fff' },
   root: { flex: 1, backgroundColor: colors.bg },
   tabs: { flexGrow: 0 },
   tabsContent: { paddingHorizontal: 12, gap: 4 },

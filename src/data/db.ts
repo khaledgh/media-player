@@ -56,7 +56,19 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE TABLE IF NOT EXISTS favorites (
   track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
-  added_at INTEGER NOT NULL
+  added_at INTEGER NOT NULL,
+  folder_id INTEGER,
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  dirty INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS fav_folders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  remote_id INTEGER UNIQUE,
+  name TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  dirty INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS plays (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +87,7 @@ export async function openUserDb(userId: number) {
   if (db) await db.closeAsync().catch(() => {});
   db = await SQLite.openDatabaseAsync(`mume_user_${userId}.db`);
   await db.execAsync(SCHEMA);
+  await migrate(db);
   // Songs are only downloaded when asked for: switch off the old "download everything" default once.
   const migrated = await db.getFirstAsync<{ value: string }>(`SELECT value FROM kv WHERE key = 'manual_downloads_only'`);
   if (!migrated) {
@@ -85,6 +98,22 @@ export async function openUserDb(userId: number) {
   openUser = userId;
   await importLegacyLibrary(db, userId);
   return db;
+}
+
+async function addColumn(d: SQLite.SQLiteDatabase, table: string, column: string, def: string) {
+  const cols = await d.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (!cols.some((c) => c.name === column)) await d.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+}
+
+/** Adds columns introduced after a user's database file was first created. */
+async function migrate(d: SQLite.SQLiteDatabase) {
+  await addColumn(d, 'favorites', 'folder_id', 'INTEGER');
+  await addColumn(d, 'favorites', 'updated_at', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(d, 'favorites', 'deleted', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(d, 'favorites', 'dirty', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(d, 'tracks', 'dl_reported', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(d, 'plays', 'reported', 'INTEGER NOT NULL DEFAULT 0');
+  await d.runAsync('UPDATE favorites SET updated_at = added_at WHERE updated_at = 0');
 }
 
 export async function closeUserDb() {

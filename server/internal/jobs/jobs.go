@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"mume/server/internal/ai"
 	"mume/server/internal/db"
 	"mume/server/internal/library"
 	"mume/server/internal/zipimport"
@@ -30,6 +31,7 @@ type Runner struct {
 	NodeYTKey string
 	Workers   int
 	HTTP      *http.Client
+	AI        *ai.Client // optional; nil/unconfigured skips name cleanup
 
 	yt      chan int64
 	imports chan int64
@@ -123,12 +125,17 @@ type YouTubeJob struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
-func (r *Runner) EnqueueYouTube(ctx context.Context, userID, folderID int64, rawURL string) (int64, error) {
+// aiLang is "ar", "en" or "" (no AI cleanup for this job).
+func (r *Runner) EnqueueYouTube(ctx context.Context, userID, folderID int64, rawURL, aiLang string) (int64, error) {
 	u, err := CanonicalYouTubeURL(rawURL)
 	if err != nil {
 		return 0, err
 	}
-	res, err := r.DB.ExecContext(ctx, `INSERT INTO youtube_jobs (user_id, url, folder_id) VALUES (?, ?, ?)`, userID, u, folderID)
+	var lang any
+	if _, ok := ai.LangName(aiLang); ok {
+		lang = aiLang
+	}
+	res, err := r.DB.ExecContext(ctx, `INSERT INTO youtube_jobs (user_id, url, folder_id, ai_lang) VALUES (?, ?, ?, ?)`, userID, u, folderID, lang)
 	if err != nil {
 		return 0, err
 	}
@@ -216,12 +223,55 @@ func (r *Runner) downloadYouTube(ctx context.Context, jobID int64) (int64, error
 		if err != nil {
 			return 0, err
 		}
+		// Only fresh downloads are cleaned up, so earlier manual edits are never overwritten.
+		if folder := r.cleanNames(ctx, j, trackID); folder != 0 {
+			j.FolderID = folder
+		}
 	}
 	err = db.WithTx(ctx, r.DB, func(tx *sql.Tx) error {
 		_, err := r.Lib.AttachTrack(ctx, tx, j.FolderID, trackID)
 		return err
 	})
 	return trackID, err
+}
+
+// cleanNames asks Gemini for a proper title and artist, stores them, and
+// returns the user's folder for that artist (created if needed), or 0 when
+// the AI step was skipped or failed. It never fails the download.
+func (r *Runner) cleanNames(ctx context.Context, j YouTubeJob, trackID int64) int64 {
+	if !r.AI.Enabled() {
+		return 0
+	}
+	var lang sql.NullString
+	if err := r.DB.QueryRowContext(ctx, `SELECT ai_lang FROM youtube_jobs WHERE id = ?`, j.ID).Scan(&lang); err != nil || !lang.Valid {
+		return 0
+	}
+	metas, err := r.Lib.TrackMetas(ctx, []int64{trackID})
+	if err != nil || len(metas) != 1 {
+		return 0
+	}
+	sug, err := r.AI.Suggest(ctx, []ai.Item{{ID: trackID, Title: metas[0].Title, Artist: metas[0].Artist}}, lang.String)
+	if err != nil || len(sug) != 1 {
+		log.Printf("youtube job %d: ai cleanup skipped: %v", j.ID, err)
+		return 0
+	}
+	s := sug[0]
+	if s.Confidence != "high" {
+		return 0
+	}
+	if err := r.Lib.SetTrackMeta(ctx, r.DB, trackID, s.Title, s.Artist); err != nil {
+		log.Printf("youtube job %d: save ai names: %v", j.ID, err)
+		return 0
+	}
+	if s.Artist == "" {
+		return 0
+	}
+	folder, err := r.Lib.EnsureUserRootFolder(ctx, j.UserID, s.Artist)
+	if err != nil {
+		log.Printf("youtube job %d: artist folder: %v", j.ID, err)
+		return 0
+	}
+	return folder
 }
 
 func (r *Runner) fetchFromNodeYT(ctx context.Context, videoURL string) (int64, error) {

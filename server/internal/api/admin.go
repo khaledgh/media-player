@@ -48,6 +48,9 @@ func (s *Server) adminRoutes(r chi.Router) {
 
 	r.Get("/tracks", s.searchTracks)
 	r.Patch("/tracks/{id}", s.updateTrack)
+	r.Post("/tracks/ai-suggest", s.suggestNames)
+	r.Get("/stats/overview", s.adminOverview)
+	r.Get("/users/{id}/activity", s.adminUserActivity)
 	r.Get("/tracks/{id}/url", s.adminTrackURL)
 
 	r.Get("/imports", s.listImports)

@@ -21,6 +21,8 @@ export const useDownloadStatus = create<DownloadStatus>(() => ({
 
 const CONCURRENCY = 2;
 
+let downloadedListener: (() => void) | null = null;
+
 /** Tracks the user wants on this device: everything in folders with auto-download on. */
 const WANTED = `
   SELECT DISTINCT t.id, t.remote_id, t.title, t.mime, t.has_cover FROM tracks t
@@ -28,6 +30,11 @@ const WANTED = `
   WHERE f.auto_download = 1 AND t.remote_id IS NOT NULL AND t.download_state IN ('none', 'queued')`;
 
 class DownloadManager {
+  /** SyncService registers here so finished downloads are reported to the server soon after. */
+  onDownloaded(fn: () => void) {
+    downloadedListener = fn;
+  }
+
   private workers = 0;
   private inFlight = new Set<number>();
   private tasks = new Map<number, FileSystem.DownloadResumable>();
@@ -142,11 +149,12 @@ class DownloadManager {
       const c = await FileSystem.downloadAsync(urls.cover_url, absPath(coverRel)!).catch(() => null);
       if (!c || c.status !== 200) coverRel = null;
     }
-    await db.runAsync(`UPDATE tracks SET file = ?, cover_file = COALESCE(?, cover_file), download_state = 'done' WHERE id = ?`, [
+    await db.runAsync(`UPDATE tracks SET file = ?, cover_file = COALESCE(?, cover_file), download_state = 'done', dl_reported = 0 WHERE id = ?`, [
       rel,
       coverRel,
       t.id,
     ]);
+    downloadedListener?.();
   }
 
   /** Turns on auto-download for a folder tree so its songs (now and later) are kept offline. */
@@ -204,6 +212,22 @@ class DownloadManager {
       useDownloadStatus.setState((s) => ({ active: s.active.filter((a) => a.trackId !== t.id) }));
       libraryEvents.emit();
     }
+  }
+
+  /** Downloads many songs in the background (used to restore what another device downloaded). */
+  async downloadTracks(trackIds: number[]) {
+    const queue = [...trackIds];
+    const run = async () => {
+      while (queue.length) {
+        if (!(await this.canDownload())) return;
+        try {
+          await this.downloadTrack(queue.shift()!);
+        } catch (e) {
+          if (e instanceof OfflineError) return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: CONCURRENCY }, run));
   }
 
   private async deleteFiles(tracks: { id: number; file: string | null }[]) {

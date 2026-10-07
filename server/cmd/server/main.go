@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"mume/server/internal/ai"
 	"mume/server/internal/api"
 	"mume/server/internal/auth"
 	"mume/server/internal/config"
@@ -69,7 +70,11 @@ func main() {
 	}
 
 	lib := &library.Library{DB: conn, Store: store}
-	runner := &jobs.Runner{DB: conn, Lib: lib, NodeYTURL: cfg.NodeYTURL, NodeYTKey: cfg.NodeYTKey, Workers: cfg.Workers}
+	aiClient := &ai.Client{Key: cfg.GeminiKey, Model: cfg.GeminiModel}
+	if !aiClient.Enabled() {
+		log.Printf("AI name cleanup disabled (set GEMINI_API_KEY to enable)")
+	}
+	runner := &jobs.Runner{DB: conn, Lib: lib, NodeYTURL: cfg.NodeYTURL, NodeYTKey: cfg.NodeYTKey, Workers: cfg.Workers, AI: aiClient}
 	runner.Start(ctx)
 
 	webFS := web.FS()
@@ -82,6 +87,7 @@ func main() {
 		Lib:       lib,
 		Jobs:      runner,
 		Store:     store,
+		AI:        aiClient,
 		MaxUpload: cfg.MaxUpload,
 		Web:       webFS,
 		Files:     files,

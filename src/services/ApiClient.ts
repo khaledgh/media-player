@@ -78,6 +78,7 @@ export const api = {
 
   get: <T>(path: string) => authed<T>('GET', path),
   post: <T>(path: string, body?: unknown) => authed<T>('POST', path, body ?? {}),
+  patch: <T>(path: string, body?: unknown) => authed<T>('PATCH', path, body ?? {}),
 
   /** Absolute URL plus auth header, for native upload/download APIs. */
   async authHeaders(): Promise<Record<string, string>> {

@@ -6,6 +6,7 @@ import type { ApiUser } from '../services/ApiClient';
 import { closeUserDb, openUserDb } from '../data/db';
 import SyncService from '../services/SyncService';
 import DownloadManager from '../services/DownloadManager';
+import { clearRecommendations } from '../services/Recommendations';
 import YouTubeService from '../services/YouTubeService';
 
 interface SessionState {
@@ -33,6 +34,7 @@ let stopping: Promise<void> = Promise.resolve();
 async function stopServices() {
   await attempt(() => SyncService.stop());
   await attempt(() => YouTubeService.stop());
+  await attempt(() => clearRecommendations());
   await attempt(() => DownloadManager.cancelAll());
   await attempt(() => TrackPlayer.reset());
   await attempt(() => closeUserDb());

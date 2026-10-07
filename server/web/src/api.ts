@@ -45,6 +45,74 @@ export interface Track {
   created_at: number;
 }
 
+export interface DayPoint {
+  day: string;
+  plays: number;
+  users: number;
+}
+
+export interface TopTrack {
+  id: number;
+  title: string;
+  artist: string;
+  plays: number;
+  downloads: number;
+  listeners: number;
+  last_played_at: number;
+}
+
+export interface TopArtist {
+  artist: string;
+  plays: number;
+  tracks: number;
+}
+
+export interface TopUser {
+  id: number;
+  email: string;
+  name: string;
+  plays: number;
+  downloads: number;
+  last_played_at: number;
+}
+
+export interface Overview {
+  days: number;
+  plays_total: number;
+  plays_period: number;
+  listeners_period: number;
+  downloads_total: number;
+  favorites_total: number;
+  daily: DayPoint[];
+  top_tracks: TopTrack[];
+  top_downloaded: TopTrack[];
+  top_artists: TopArtist[];
+  top_users: TopUser[];
+}
+
+export interface UserActivity {
+  user_id: number;
+  plays_total: number;
+  plays_period: number;
+  downloads_total: number;
+  favorites_total: number;
+  unique_tracks: number;
+  last_played_at: number;
+  daily: DayPoint[];
+  top_played: TopTrack[];
+  top_downloaded: TopTrack[];
+  top_artists: TopArtist[];
+}
+
+export interface AiSuggestion {
+  id: number;
+  old_title: string;
+  old_artist: string;
+  title: string;
+  artist: string;
+  confidence: 'high' | 'low';
+}
+
 export interface ImportJob {
   id: number;
   folder_id: number;
