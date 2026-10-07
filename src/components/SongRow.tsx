@@ -3,7 +3,8 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { Check, CloudDownload, EllipsisVertical, Pause, Play } from 'lucide-react-native';
 import Artwork from './Artwork';
 import { useOverlays } from './Overlays';
-import DownloadManager, { useDownloadStatus } from '../services/DownloadManager';
+import { useDownloadStatus } from '../services/DownloadManager';
+import { downloadToFolder } from '../hooks/downloadToFolder';
 import { colors, font, formatTime } from '../theme';
 import { displayArtist } from '../data/library';
 import type { Track } from '../data/library';
@@ -22,20 +23,14 @@ interface Props {
 }
 
 function SongRow({ track, isCurrent, isPlaying, selected, selecting, onPress, onLongPress, onMore, onPlay, leading }: Props) {
-  const { toast } = useOverlays();
+  const { toast, pickFolder } = useOverlays();
   const offline = track.download_state !== 'done';
   const downloading = track.download_state === 'downloading';
   const canDownload = offline && !!track.remote_id; // songs only on this phone have nothing to download
   const progress = useDownloadStatus((s) => s.active.find((a) => a.trackId === track.id)?.progress);
 
-  async function download() {
-    try {
-      await DownloadManager.downloadTrack(track.id);
-      toast(`Downloaded "${track.title}"`);
-    } catch (e) {
-      toast(e instanceof Error && e.message ? `Download failed: ${e.message}` : 'Download failed');
-    }
-  }
+  const download = () => downloadToFolder(track, { pickFolder, toast });
+
   return (
     <Pressable
       onPress={onPress}

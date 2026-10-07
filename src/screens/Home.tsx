@@ -7,6 +7,7 @@ import Artwork from '../components/Artwork';
 import SongRow from '../components/SongRow';
 import FolderRow from '../components/FolderRow';
 import { Button, Empty, SectionHeader } from '../components/ui';
+import { usePullRefresh } from '../hooks/usePullRefresh';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
 import { usePlayer } from '../services/PlayerService';
@@ -27,7 +28,7 @@ import { colors, font, type } from '../theme';
 import { navigate } from '../navigation/ref';
 import { useSyncStatus } from '../services/SyncService';
 
-const TABS = ['Suggested', 'Songs', 'Artists', 'Albums', 'Folders'] as const;
+const TABS = ['Suggested', 'Songs', 'Artists', 'Albums', 'Folders', 'Shared'] as const;
 type Tab = (typeof TABS)[number];
 export const BOTTOM_SPACE = 170; // tab bar + mini player
 
@@ -52,6 +53,7 @@ export default function Home() {
       {tab === 'Artists' && <Artists />}
       {tab === 'Albums' && <Albums />}
       {tab === 'Folders' && <Folders />}
+      {tab === 'Shared' && <Folders shared />}
     </View>
   );
 }
@@ -85,6 +87,7 @@ function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
   const all = useLibrary(() => getAllTracks('added_desc'), []);
   const syncing = useSyncStatus((s) => s.syncing && !s.firstSyncDone);
   const { play, addFromYouTube } = useActions();
+  const refreshControl = usePullRefresh();
 
   if (all.data && !all.data.length) {
     return (
@@ -101,7 +104,7 @@ function Suggested({ onSeeAll }: { onSeeAll: (t: Tab) => void }) {
   const mostList = most.data?.length ? most.data : all.data?.slice(12, 24);
 
   return (
-    <ScrollView contentContainerStyle={{ paddingTop: 20, paddingBottom: BOTTOM_SPACE }} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={{ paddingTop: 20, paddingBottom: BOTTOM_SPACE }} showsVerticalScrollIndicator={false} refreshControl={refreshControl}>
       <SectionHeader
         title={recent.data?.length ? 'Recently Played' : 'Recently Added'}
         action="See All"
@@ -175,6 +178,7 @@ function Card({ track, onPress }: { track: Track; onPress: () => void }) {
 // ---------- Songs ----------
 
 function Songs() {
+  const refreshControl = usePullRefresh();
   const [mode, setMode] = useState<SortMode>('title');
   useEffect(() => {
     kvGet('songs_sort').then((v) => v && setMode(v as SortMode));
@@ -198,6 +202,7 @@ function Songs() {
 
   return (
     <FlatList
+      refreshControl={refreshControl}
       data={tracks.data}
       keyExtractor={(t) => String(t.id)}
       contentContainerStyle={{ paddingBottom: BOTTOM_SPACE }}
@@ -231,9 +236,11 @@ export function CountHeader({ count, noun, sortLabel, onSort }: { count: number;
 // ---------- Artists ----------
 
 function Artists() {
+  const refreshControl = usePullRefresh();
   const artists = useLibrary(() => getArtists(), []);
   return (
     <FlatList
+      refreshControl={refreshControl}
       data={artists.data}
       keyExtractor={(a) => a.name}
       contentContainerStyle={{ paddingBottom: BOTTOM_SPACE }}
@@ -258,10 +265,12 @@ function Artists() {
 // ---------- Albums ----------
 
 function Albums() {
+  const refreshControl = usePullRefresh();
   const albums = useLibrary(() => getAlbums(), []);
   const size = (width - 20 * 2 - 16) / 2;
   return (
     <FlatList
+      refreshControl={refreshControl}
       data={albums.data}
       keyExtractor={(a) => a.name}
       numColumns={2}
@@ -286,29 +295,38 @@ function Albums() {
 
 // ---------- Folders ----------
 
-export function Folders() {
-  const folders = useLibrary(() => getFolders(null), []);
+/** Your own folders, or with `shared` the folders other people shared with you. */
+export function Folders({ shared = false }: { shared?: boolean }) {
+  const refreshControl = usePullRefresh();
+  const folders = useLibrary(() => getFolders(null, shared), [shared]);
   const { folderMenu, newFolder } = useActions();
   return (
     <FlatList
+      refreshControl={refreshControl}
       data={folders.data}
       keyExtractor={(f) => String(f.id)}
       contentContainerStyle={{ paddingBottom: BOTTOM_SPACE }}
       ListHeaderComponent={
         <View style={styles.countHeader}>
-          <Text style={type.h3}>{folders.data?.length ?? 0} folders</Text>
-          <Pressable onPress={() => newFolder(null)} style={styles.sortBtn} hitSlop={8}>
-            <FolderPlus size={16} color={colors.brand} />
-            <Text style={type.link}>New folder</Text>
-          </Pressable>
+          <Text style={type.h3}>
+            {folders.data?.length ?? 0} {shared ? 'shared folders' : 'folders'}
+          </Text>
+          {!shared && (
+            <Pressable onPress={() => newFolder(null)} style={styles.sortBtn} hitSlop={8}>
+              <FolderPlus size={16} color={colors.brand} />
+              <Text style={type.link}>New folder</Text>
+            </Pressable>
+          )}
         </View>
       }
       ListEmptyComponent={
-        folders.loading ? null : (
+        folders.loading ? null : shared ? (
+          <Empty icon={<FolderPlus size={28} color={colors.brand} />} title="Nothing shared with you yet" body="Folders that other people share with you show up here. Pull down to refresh." />
+        ) : (
           <Empty
             icon={<FolderPlus size={28} color={colors.brand} />}
             title="No folders yet"
-            body="Folders keep your music organised. Everything inside plays in order and downloads automatically."
+            body="Folders keep your music organised. Save songs from the Online tab or add your own."
             action={<Button title="Create a folder" onPress={() => newFolder(null)} style={{ marginTop: 12 }} />}
           />
         )

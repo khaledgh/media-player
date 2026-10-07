@@ -9,6 +9,7 @@ import Artwork from '../components/Artwork';
 import SongRow from '../components/SongRow';
 import FloatingDock from '../components/FloatingDock';
 import { Button, SectionHeader } from '../components/ui';
+import { usePullRefresh } from '../hooks/usePullRefresh';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
 import { usePlayer } from '../services/PlayerService';
@@ -19,6 +20,7 @@ import { colors, formatTime, type } from '../theme';
 
 /** Artist or album page. */
 export default function Collection() {
+  const refreshControl = usePullRefresh();
   const { kind, name } = useRoute<RouteProp<RootStackParams, 'Collection'>>().params;
   const tracks = useLibrary(() => getTracksBy(kind, name), [kind, name]);
   const a = useActions();
@@ -33,6 +35,7 @@ export default function Collection() {
     <View style={styles.root}>
       <Header back />
       <FlatList
+        refreshControl={refreshControl}
         data={list}
         keyExtractor={(t) => String(t.id)}
         contentContainerStyle={{ paddingBottom: 170 }}

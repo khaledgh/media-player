@@ -2,14 +2,14 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FolderOpen, Heart, House, Settings } from 'lucide-react-native';
+import { Cloud, FolderOpen, Heart, House, Settings } from 'lucide-react-native';
 import MiniPlayer from './MiniPlayer';
 import StatusBanner from './StatusBanner';
 import { haptic } from './ui';
 import { colors, font } from '../theme';
 
-const ICONS = { Home: House, Favorites: Heart, Library: FolderOpen, Settings } as const;
-const LABELS = { Home: 'Home', Favorites: 'Favorites', Library: 'Folders', Settings: 'Settings' } as const;
+const ICONS = { Home: House, Online: Cloud, Favorites: Heart, Library: FolderOpen, Settings } as const;
+const LABELS = { Home: 'Home', Online: 'Online', Favorites: 'Favorites', Library: 'Folders', Settings: 'Settings' } as const;
 
 export default function TabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();

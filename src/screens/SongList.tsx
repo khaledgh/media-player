@@ -7,6 +7,7 @@ import Header from '../components/Header';
 import SongRow from '../components/SongRow';
 import FloatingDock from '../components/FloatingDock';
 import { Empty } from '../components/ui';
+import { usePullRefresh } from '../hooks/usePullRefresh';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
 import { usePlayer } from '../services/PlayerService';
@@ -17,6 +18,7 @@ import { colors } from '../theme';
 
 /** "See All" lists: Recently Played and Most Played. */
 export default function SongList() {
+  const refreshControl = usePullRefresh();
   const { title, source } = useRoute<RouteProp<RootStackParams, 'Songs'>>().params;
   const tracks = useLibrary(() => (source === 'recent' ? getRecentlyPlayed(100) : getMostPlayed(100)), [source]);
   const a = useActions();
@@ -27,6 +29,7 @@ export default function SongList() {
     <View style={styles.root}>
       <Header back title={title} />
       <FlatList
+        refreshControl={refreshControl}
         data={list}
         keyExtractor={(t) => String(t.id)}
         contentContainerStyle={{ paddingBottom: 170, paddingTop: 8 }}

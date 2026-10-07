@@ -1,0 +1,20 @@
+# EAS uses this instead of .gitignore: keep the backend (and its secrets) out of app builds.
+/server
+/backend
+/_legacy
+/android
+/ios
+node_modules/
+.expo/
+dist/
+web-build/
+.env*
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+*.tsbuildinfo
+autolink_err_full.txt
+autolink_res.json

@@ -20,6 +20,7 @@ interface PlayerState {
   rate: number;
   sleepAt: number | null; // epoch ms
   queueTitle: string;
+  miniHidden: boolean; // user closed the mini player bar; music keeps playing
 }
 
 export const usePlayer = create<PlayerState>(() => ({
@@ -31,6 +32,7 @@ export const usePlayer = create<PlayerState>(() => ({
   rate: 1,
   sleepAt: null,
   queueTitle: '',
+  miniHidden: false,
 }));
 
 function toRN(t: Track, url: string): RNTrack {
@@ -89,7 +91,7 @@ class PlayerService {
     TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, async (e) => {
       if (!e.track || !hasDb()) return usePlayer.setState({ current: null });
       const t = await getTrack(Number(e.track.id));
-      usePlayer.setState({ current: t, isFavorite: t ? await isFavorite(t.id) : false });
+      usePlayer.setState({ current: t, isFavorite: t ? await isFavorite(t.id) : false, miniHidden: false });
       if (t) recordPlay(t.id).catch(() => {});
     });
     // "Playing" means the user wants sound: it stays true while buffering or loading,
@@ -185,7 +187,7 @@ class PlayerService {
     await TrackPlayer.add(toRN(first, firstUrl));
     await TrackPlayer.setRate(usePlayer.getState().rate);
     await TrackPlayer.play();
-    usePlayer.setState({ shuffle, queueTitle: opts.title ?? '' });
+    usePlayer.setState({ shuffle, queueTitle: opts.title ?? '', miniHidden: false });
 
     const at = order.findIndex((t) => t.id === first.id);
     this.fillQueue(order.slice(at + 1), order.slice(0, at), token);
@@ -236,7 +238,9 @@ class PlayerService {
     await TrackPlayer.add(toRN(track, url));
   }
 
+  /** Tapping the playing song while the mini player is hidden just brings the bar back. */
   async toggle() {
+    if (usePlayer.getState().miniHidden) return usePlayer.setState({ miniHidden: false });
     await this.init();
     const { state } = await TrackPlayer.getPlaybackState();
     if (await isActivelyPlaying(state)) return TrackPlayer.pause();

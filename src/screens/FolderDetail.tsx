@@ -28,6 +28,7 @@ import SongRow from '../components/SongRow';
 import FolderRow from '../components/FolderRow';
 import FloatingDock from '../components/FloatingDock';
 import { Button, Empty, IconButton, SectionHeader } from '../components/ui';
+import { usePullRefresh } from '../hooks/usePullRefresh';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
 import { usePlayer } from '../services/PlayerService';
@@ -50,6 +51,7 @@ import { navigate } from '../navigation/ref';
 import { colors, font, formatTime, type } from '../theme';
 
 export default function FolderDetail() {
+  const refreshControl = usePullRefresh();
   const { id } = useRoute<RouteProp<RootStackParams, 'Folder'>>().params;
   const nav = useNavigation();
   const insets = useSafeAreaInsets();
@@ -171,7 +173,7 @@ export default function FolderDetail() {
             <Text style={[type.caption, { color: colors.text }]}>
               {downloaded === total ? 'All songs available offline' : f.auto_download ? `Downloaded ${downloaded} of ${total}` : 'Download for offline'}
             </Text>
-            {f.auto_download && downloaded < total && (
+            {!!f.auto_download && downloaded < total && (
               <View style={styles.progress}>
                 <View style={[styles.progressFill, { width: `${(downloaded / total) * 100}%` }]} />
               </View>
@@ -281,6 +283,7 @@ export default function FolderDetail() {
         />
       ) : (
         <FlatList
+          refreshControl={refreshControl}
           data={list}
           keyExtractor={(t) => String(t.item_id)}
           ListHeaderComponent={header}

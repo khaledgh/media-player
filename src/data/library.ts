@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { absPath, ensureDirs, getDb, libraryEvents } from './db';
+import { absPath, ensureDirs, getDb, inTransaction, libraryEvents } from './db';
 
 export type DownloadState = 'none' | 'queued' | 'downloading' | 'done' | 'error';
 
@@ -117,9 +117,10 @@ const FOLDER_SELECT = `
     (SELECT COUNT(*) FROM folders c WHERE c.parent_id = f.id) AS folder_count
   FROM folders f`;
 
-export async function getFolders(parentId: number | null): Promise<Folder[]> {
+/** Folders directly under parentId; `shared` limits the top level to your own (false) or shared-with-you (true) folders. */
+export async function getFolders(parentId: number | null, shared?: boolean): Promise<Folder[]> {
   return getDb().getAllAsync<Folder>(
-    `${FOLDER_SELECT} WHERE f.parent_id IS ? ORDER BY f.shared ASC, f.sort_order ASC, f.name COLLATE NOCASE ASC`,
+    `${FOLDER_SELECT} WHERE f.parent_id IS ?${shared === undefined ? '' : ` AND f.shared = ${shared ? 1 : 0}`} ORDER BY f.shared ASC, f.sort_order ASC, f.name COLLATE NOCASE ASC`,
     [parentId],
   );
 }
@@ -186,6 +187,16 @@ export async function getFolderStats(folderId: number) {
 export async function getAllTracks(mode: SortMode = 'title'): Promise<Track[]> {
   return getDb().getAllAsync<Track>(
     `SELECT t.* FROM tracks t WHERE EXISTS (SELECT 1 FROM items i WHERE i.track_id = t.id) ORDER BY ${orderBy(mode, false)}`,
+  );
+}
+
+/** Every song the server has shared with this account, whether or not it is on this phone. */
+export async function getOnlineTracks(query = ''): Promise<Track[]> {
+  const q = `%${query.trim().replace(/[%_]/g, '')}%`;
+  return getDb().getAllAsync<Track>(
+    `SELECT * FROM tracks WHERE remote_id IS NOT NULL AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)
+     ORDER BY title COLLATE NOCASE ASC LIMIT 500`,
+    [q, q, q],
   );
 }
 
@@ -325,7 +336,7 @@ export async function createFolder(name: string, parentId: number | null): Promi
     'SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM folders WHERE parent_id IS ? AND shared = 0',
     [parentId],
   );
-  const r = await db.runAsync('INSERT INTO folders (parent_id, name, sort_order, created_at) VALUES (?, ?, ?, ?)', [
+  const r = await db.runAsync('INSERT INTO folders (parent_id, name, sort_order, auto_download, created_at) VALUES (?, ?, ?, 0, ?)', [
     parentId,
     trimmed,
     next?.n ?? 0,
@@ -390,7 +401,7 @@ export async function reorderItems(folderId: number, itemIds: number[]) {
   const f = await getFolder(folderId);
   if (!f) return;
   const db = getDb();
-  await db.withTransactionAsync(async () => {
+  await inTransaction(async () => {
     for (const [i, id] of itemIds.entries()) await db.runAsync('UPDATE items SET sort_order = ? WHERE id = ?', [i, id]);
     await db.runAsync(`UPDATE folders SET sort_mode = 'custom' WHERE id = ?`, [folderId]);
   });

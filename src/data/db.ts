@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS folders (
   name TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   sort_mode TEXT NOT NULL DEFAULT 'custom',
-  auto_download INTEGER NOT NULL DEFAULT 1,
+  auto_download INTEGER NOT NULL DEFAULT 0,
   shared INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT 0
 );
@@ -75,6 +75,13 @@ export async function openUserDb(userId: number) {
   if (db) await db.closeAsync().catch(() => {});
   db = await SQLite.openDatabaseAsync(`mume_user_${userId}.db`);
   await db.execAsync(SCHEMA);
+  // Songs are only downloaded when asked for: switch off the old "download everything" default once.
+  const migrated = await db.getFirstAsync<{ value: string }>(`SELECT value FROM kv WHERE key = 'manual_downloads_only'`);
+  if (!migrated) {
+    await db.runAsync('UPDATE folders SET auto_download = 0');
+    await db.runAsync(`UPDATE tracks SET download_state = 'none' WHERE download_state = 'queued'`);
+    await db.runAsync(`INSERT OR REPLACE INTO kv (key, value) VALUES ('manual_downloads_only', '1')`);
+  }
   openUser = userId;
   await importLegacyLibrary(db, userId);
   return db;
@@ -89,6 +96,30 @@ export async function closeUserDb() {
 export function getDb(): SQLite.SQLiteDatabase {
   if (!db) throw new Error('Library database is not open');
   return db;
+}
+
+// expo-sqlite shares one connection: two overlapping transactions make one roll back the other
+// ("cannot rollback - no transaction is active"). Run them one at a time.
+let txQueue: Promise<unknown> = Promise.resolve();
+export function inTransaction(fn: () => Promise<void>): Promise<void> {
+  const run = txQueue.then(async () => {
+    let failure: unknown;
+    try {
+      await getDb().withTransactionAsync(async () => {
+        try {
+          await fn();
+        } catch (e) {
+          failure = e;
+          throw e;
+        }
+      });
+    } catch (e) {
+      // Report what actually failed, not the follow-up rollback error that would hide it.
+      throw failure ?? e;
+    }
+  });
+  txQueue = run.catch(() => {});
+  return run;
 }
 
 export function hasDb() {
@@ -188,7 +219,7 @@ async function importLegacyLibrary(target: SQLite.SQLiteDatabase, userId: number
         for (const [i, g] of next.entries()) {
           const parent = g.parent_id !== null ? folderMap.get(g.parent_id) ?? null : null;
           const r = await target.runAsync(
-            'INSERT INTO folders (parent_id, name, sort_order, created_at) VALUES (?, ?, ?, ?)',
+            'INSERT INTO folders (parent_id, name, sort_order, auto_download, created_at) VALUES (?, ?, ?, 0, ?)',
             [parent, g.name, i, now],
           );
           folderMap.set(g.id, r.lastInsertRowId);

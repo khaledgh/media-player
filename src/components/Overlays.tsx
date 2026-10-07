@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
-import Animated, { FadeIn, FadeOut, SlideInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { downloadToFolder } from '../hooks/downloadToFolder';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   CloudDownload,
@@ -36,17 +37,20 @@ import { navigate } from '../navigation/ref';
 
 // ---------- generic sheet ----------
 
-export function Sheet({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
+// Plain views + the native Modal fade: a Reanimated `entering` animation here left the
+// sheet's touch area at its start position on Android, so none of its buttons responded.
+export function Sheet({ visible, onClose, children, avoidKeyboard }: { visible: boolean; onClose: () => void; children: React.ReactNode; avoidKeyboard?: boolean }) {
   const insets = useSafeAreaInsets();
+  const Wrap = avoidKeyboard ? KeyboardAvoidingView : View;
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <KeyboardAvoidingView behavior="padding" style={styles.sheetWrap}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <Wrap {...(avoidKeyboard ? { behavior: 'padding' as const } : {})} style={styles.sheetWrap}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
-        <Animated.View entering={SlideInDown.duration(160)} style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.handle} />
           {children}
-        </Animated.View>
-      </KeyboardAvoidingView>
+        </View>
+      </Wrap>
     </Modal>
   );
 }
@@ -307,11 +311,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
                 <SheetItem
                   icon={<CloudDownload size={20} color={colors.text} />}
                   label="Download"
-                  onPress={runMenu(async () => {
-                    toast('Downloading…');
-                    await DownloadManager.downloadTrack(m.track.id);
-                    toast('Downloaded');
-                  })}
+                  onPress={runMenu(() => downloadToFolder(m.track, { pickFolder, toast }))}
                 />
               )}
               <SheetItem icon={<Info size={20} color={colors.text} />} label="Details" onPress={runMenu(() => setDetails(m.track))} />
@@ -460,7 +460,7 @@ export function OverlayProvider({ children }: { children: React.ReactNode }) {
       </Sheet>
 
       {/* prompt */}
-      <Sheet visible={!!promptState} onClose={() => closePrompt(null)}>
+      <Sheet visible={!!promptState} onClose={() => closePrompt(null)} avoidKeyboard>
         {promptState && (
           <View style={{ paddingHorizontal: 24, gap: 14 }}>
             <Text style={type.h2}>{promptState.title}</Text>

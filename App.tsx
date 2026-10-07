@@ -23,6 +23,7 @@ import FolderDetail from './src/screens/FolderDetail';
 import Collection from './src/screens/Collection';
 import SongList from './src/screens/SongList';
 import Search from './src/screens/Search';
+import Online from './src/screens/Online';
 import PlayerScreen from './src/screens/PlayerScreen';
 import { useSession } from './src/store/SessionStore';
 import Player from './src/services/PlayerService';
@@ -44,6 +45,7 @@ function TabsScreen() {
   return (
     <Tabs.Navigator tabBar={(p) => <TabBar {...p} />} screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: colors.bg } }}>
       <Tabs.Screen name="Home" component={Home} />
+      <Tabs.Screen name="Online" component={Online} />
       <Tabs.Screen name="Favorites" component={Favorites} />
       <Tabs.Screen name="Library" component={Library} />
       <Tabs.Screen name="Settings" component={Settings} />

@@ -4,6 +4,7 @@ import { Heart } from 'lucide-react-native';
 import Header from '../components/Header';
 import SongRow from '../components/SongRow';
 import { Empty } from '../components/ui';
+import { usePullRefresh } from '../hooks/usePullRefresh';
 import { useLibrary } from '../hooks/useLibrary';
 import { useActions } from '../hooks/useActions';
 import { usePlayer } from '../services/PlayerService';
@@ -13,6 +14,7 @@ import { colors } from '../theme';
 import { BOTTOM_SPACE, CountHeader } from './Home';
 
 export default function Favorites() {
+  const refreshControl = usePullRefresh();
   const favs = useLibrary(() => getFavorites(), []);
   const a = useActions();
   const current = usePlayer((s) => s.current?.id);
@@ -22,6 +24,7 @@ export default function Favorites() {
     <View style={styles.root}>
       <Header />
       <FlatList
+        refreshControl={refreshControl}
         data={list}
         keyExtractor={(t) => String(t.id)}
         contentContainerStyle={{ paddingBottom: BOTTOM_SPACE }}

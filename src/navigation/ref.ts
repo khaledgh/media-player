@@ -12,6 +12,7 @@ export type RootStackParams = {
 
 export type TabParams = {
   Home: undefined;
+  Online: undefined;
   Favorites: undefined;
   Library: undefined;
   Settings: undefined;

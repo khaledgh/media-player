@@ -2,7 +2,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { create } from 'zustand';
 import { api, ApiError, OfflineError } from './ApiClient';
-import { absPath, getDb, hasDb, kvGet, kvSet, libraryEvents } from '../data/db';
+import { absPath, getDb, hasDb, inTransaction, kvGet, kvSet, libraryEvents } from '../data/db';
 import { onOutboxChange, pruneOrphanTracks } from '../data/library';
 import type { OutboxOp } from '../data/library';
 import DownloadManager from './DownloadManager';
@@ -179,7 +179,7 @@ class SyncService {
       }
       if (wire.length) {
         const res = await api.post<PushResult>('/sync/push', { ops: wire });
-        await db.withTransactionAsync(async () => {
+        await inTransaction(async () => {
           for (const [ref, id] of Object.entries(res.folders)) {
             await db.runAsync('UPDATE folders SET remote_id = NULL WHERE remote_id = ? AND id != ?', [id, Number(ref.slice(1))]);
             await db.runAsync('UPDATE folders SET remote_id = ? WHERE id = ?', [id, Number(ref.slice(1))]);
@@ -315,7 +315,7 @@ class SyncService {
   /** Links a local track to its server copy, merging with an existing copy if the server deduplicated it. */
   private async adoptUploadedTrack(localTrack: number, remoteTrack: number, localItem: number, remoteItem: number) {
     const db = getDb();
-    await db.withTransactionAsync(async () => {
+    await inTransaction(async () => {
       const existing = await db.getFirstAsync<{ id: number; file: string | null }>(
         'SELECT id, file FROM tracks WHERE remote_id = ? AND id != ?',
         [remoteTrack, localTrack],
@@ -358,7 +358,7 @@ class SyncService {
     const res = await api.get<PullResult>(`/sync?since=${since}`);
     const changed = res.folders.length + res.items.length + res.tracks.length > 0;
 
-    await db.withTransactionAsync(async () => {
+    await inTransaction(async () => {
       for (const t of res.tracks) {
         const r = await db.runAsync(
           `UPDATE tracks SET title = ?, artist = ?, album = ?, duration_ms = ?, size_bytes = ?, mime = ?, has_cover = ?, source = ?
@@ -394,7 +394,7 @@ class SyncService {
         } else {
           await db.runAsync(
             'INSERT INTO folders (remote_id, name, sort_order, sort_mode, auto_download, shared, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [f.id, f.name, f.sort_order, f.sort_mode, 1, shared, Date.now()],
+            [f.id, f.name, f.sort_order, f.sort_mode, 0, shared, Date.now()],
           );
         }
       }
