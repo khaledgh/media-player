@@ -22,7 +22,7 @@ import {
   SquarePlay as Youtube,
 } from 'lucide-react';
 import { api, formatBytes, formatDuration, uploadFiles } from '../api';
-import type { AdminUser, Folder, Group, ImportJob, Track } from '../api';
+import type { AdminUser, Folder, Group, ImportJob, Track, YouTubeJob } from '../api';
 import { Badge, Button, Card, Checkbox, Empty, IconButton, Input, Modal, Select, Spinner, cx, errMsg, useConfirm, useToast } from '../components/ui';
 import { PageHeader } from '../components/Layout';
 import { AiRename } from '../components/AiRename';
@@ -383,6 +383,7 @@ function TracksTab({ folder }: { folder: Folder }) {
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState<number[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
+  const [ytOpen, setYtOpen] = useState(false);
   const player = usePreview();
 
   useEffect(() => setOrder(tracks.data ?? []), [tracks.data]);
@@ -425,9 +426,13 @@ function TracksTab({ folder }: { folder: Folder }) {
   return (
     <div className="p-5">
       <Uploader folderId={folder.id} onImported={refresh} />
+      <YouTubeAdd folderId={folder.id} open={ytOpen} onClose={() => setYtOpen(false)} onAdded={refresh} />
       <div className="mt-6 mb-2 flex items-center justify-between">
         <h3 className="font-semibold">Songs</h3>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          <Button variant="ghost" icon={<Youtube className="size-4" />} onClick={() => setYtOpen(true)}>
+            Add from YouTube
+          </Button>
           {order.length > 0 && (
             <Button variant="ghost" icon={<Sparkles className="size-4" />} onClick={() => setAiOpen(true)}>
               Fix names with AI{picked.length ? ` (${picked.length})` : ''}
@@ -651,6 +656,110 @@ function Uploader({ folderId, onImported }: { folderId: number; onImported: () =
         </ul>
       )}
     </div>
+  );
+}
+
+const YT_LINK = /(youtube\.com\/(watch\?(.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/|music\.youtube\.com\/watch\?(.*&)?v=)[A-Za-z0-9_-]{11}/;
+
+/** Paste a YouTube link; the server fetches the audio into this folder. Shows the jobs started here. */
+function YouTubeAdd({ folderId, open, onClose, onAdded }: { folderId: number; open: boolean; onClose: () => void; onAdded: () => void }) {
+  const toast = useToast();
+  const [url, setUrl] = useState('');
+  const [lang, setLang] = useState<'ar' | 'en' | 'off'>('off');
+  const [sending, setSending] = useState(false);
+  const [jobIds, setJobIds] = useState<number[]>([]);
+
+  const jobs = useQuery({
+    queryKey: ['youtube-jobs'],
+    queryFn: () => api.get<YouTubeJob[]>('/admin/youtube-jobs'),
+    refetchInterval: (q) => (q.state.data?.some((j) => jobIds.includes(j.id) && (j.status === 'queued' || j.status === 'running')) ? 3000 : false),
+    enabled: jobIds.length > 0,
+  });
+  const mine = (jobs.data ?? []).filter((j) => jobIds.includes(j.id));
+  const done = mine.filter((j) => j.status === 'done').length;
+  const lastDone = useRef(0);
+
+  useEffect(() => {
+    if (done > lastDone.current) onAdded();
+    lastDone.current = done;
+  }, [done, onAdded]);
+
+  const valid = YT_LINK.test(url.trim());
+
+  async function add() {
+    if (!valid) return;
+    setSending(true);
+    try {
+      const j = await api.post<YouTubeJob>(`/admin/folders/${folderId}/youtube`, { url: url.trim(), ...(lang !== 'off' ? { ai_lang: lang } : {}) });
+      setJobIds((ids) => [j.id, ...ids]);
+      setUrl('');
+      onClose();
+      toast('Getting the audio… it appears in this folder shortly');
+    } catch (e) {
+      toast(errMsg(e), 'danger');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <>
+      {mine.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {mine.map((j) => (
+            <li key={j.id} className="rounded-xl bg-surface-2 px-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Youtube className="size-4 shrink-0 text-brand" />
+                  <span className="truncate">{j.url.replace('https://www.youtube.com/watch?v=', 'youtu.be/')}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <StatusBadge status={j.status} />
+                  {(j.status === 'done' || j.status === 'error') && (
+                    <button aria-label="Dismiss" onClick={() => setJobIds((ids) => ids.filter((x) => x !== j.id))} className="text-muted hover:text-white">
+                      <X className="size-4" />
+                    </button>
+                  )}
+                </span>
+              </div>
+              {j.error && <p className="mt-2 text-xs break-words whitespace-pre-line text-danger">{j.error.split('\n')[0]}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <Modal
+        open={open}
+        title="Add from YouTube"
+        onClose={onClose}
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button disabled={!valid} loading={sending} onClick={add}>
+              Add
+            </Button>
+          </>
+        }
+      >
+        <form
+          className="space-y-4 pb-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <Input label="YouTube link" autoFocus placeholder="https://youtu.be/…" value={url} onChange={(e) => setUrl(e.target.value)} />
+          {url.trim() !== '' && !valid && <p className="-mt-2 text-xs text-danger">Paste a YouTube video link, e.g. https://youtu.be/…</p>}
+          <Select label="Fix the song name with AI?" value={lang} onChange={(e) => setLang(e.target.value as typeof lang)}>
+            <option value="off">No — keep the YouTube title</option>
+            <option value="ar">Yes — write in Arabic (العربية)</option>
+            <option value="en">Yes — write in English</option>
+          </Select>
+          <p className="text-xs text-muted">The audio is saved to the cloud and reaches everyone who can see this folder on their next sync.</p>
+        </form>
+      </Modal>
+    </>
   );
 }
 

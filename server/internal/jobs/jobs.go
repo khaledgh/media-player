@@ -266,6 +266,10 @@ func (r *Runner) cleanNames(ctx context.Context, j YouTubeJob, trackID int64) in
 	if s.Artist == "" {
 		return 0
 	}
+	// Songs saved into a shared (CMS) folder stay there; only personal saves go to an artist folder.
+	if f, err := r.Lib.GetFolder(ctx, r.DB, j.FolderID); err != nil || f.OwnerUserID == nil {
+		return 0
+	}
 	folder, err := r.Lib.EnsureUserRootFolder(ctx, j.UserID, s.Artist)
 	if err != nil {
 		log.Printf("youtube job %d: artist folder: %v", j.ID, err)

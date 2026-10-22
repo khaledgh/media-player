@@ -43,6 +43,7 @@ func (s *Server) adminRoutes(r chi.Router) {
 	r.Put("/folders/{id}/tracks/order", s.reorderFolderTracks)
 	r.Delete("/folders/{id}/tracks/{itemId}", s.removeFolderTrack)
 	r.Post("/folders/{id}/upload", s.uploadToFolder)
+	r.Post("/folders/{id}/youtube", s.adminYouTube)
 	r.Get("/folders/{id}/access", s.getAccess)
 	r.Put("/folders/{id}/access", s.setAccess)
 
@@ -1018,6 +1019,38 @@ func (s *Server) getImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+// adminYouTube downloads a video's audio into a shared folder.
+func (s *Server) adminYouTube(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam(r, "id")
+	if !ok {
+		badID(w)
+		return
+	}
+	var in struct {
+		URL    string `json:"url"`
+		AILang string `json:"ai_lang"` // "ar" | "en" | "" (keep YouTube's title)
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	ctx := r.Context()
+	if _, err := s.sharedFolder(ctx, s.DB, id); err != nil {
+		fail(w, err)
+		return
+	}
+	jobID, err := s.Jobs.EnqueueYouTube(ctx, auth.FromContext(ctx).UserID, id, in.URL, in.AILang)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	j, err := s.Jobs.GetYouTubeJob(ctx, jobID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, j)
 }
 
 func (s *Server) listYouTubeJobs(w http.ResponseWriter, r *http.Request) {
